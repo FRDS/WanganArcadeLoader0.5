@@ -79,6 +79,18 @@ unsafe extern "C" fn adm_window(device: *mut AdmDevice) -> *const AdmWindow {
 			window_mode,
 		)
 		.unwrap();
+
+	if CONFIG.fullscreen {
+		window.set_monitor(
+			window_mode, 
+			0, 
+			0, 
+			CONFIG.width, 
+			CONFIG.height, 
+			None
+		);
+	}
+
 	WINDOW_HANDLE = Some(window.get_x11_window());
 	window.make_current();
 	window.set_resizable(true);
