@@ -35,10 +35,14 @@ struct AdmWindow {
 }
 
 extern "C" fn adm_config() -> *const *const AdmChooseMode {
-	let adm = AdmChooseMode {
-		ident: [b'M', b'O', b'C', b'F'],
-		refresh: 60,
-		..Default::default()
+	let adm = unsafe {
+		AdmChooseMode {
+			ident: [b'M', b'O', b'C', b'F'],
+			width: CONFIG.width,
+			height: CONFIG.height,
+			refresh: 60,
+			..Default::default()
+		}
 	};
 	Box::leak(Box::new(Box::leak(Box::new(adm)) as *const AdmChooseMode))
 }
@@ -51,17 +55,33 @@ unsafe extern "C" fn adm_window() -> *mut AdmWindow {
 	let mut glfw = glfw::init(glfw::fail_on_errors).unwrap();
 	glfw.window_hint(WindowHint::Resizable(false)); // Force floating on tiling window managers
 	let (mut window, _) = glfw.with_primary_monitor(|glfw, m| {
-		let window_mode = if CONFIG.fullscreen && m.is_some() {
-			WindowMode::FullScreen(m.unwrap())
+		// Fullscreen is borderless at the monitor's current mode, so the display
+		// mode never changes; adm_swap_buffers scales the game's frame to fit.
+		let fullscreen = if CONFIG.fullscreen {
+			m.and_then(|m| m.get_video_mode().map(|mode| (m, mode)))
 		} else {
-			WindowMode::Windowed
+			None
 		};
-		glfw.create_window(
-			CONFIG.width,
-			CONFIG.height,
-			"WanganArcadeLoader",
-			window_mode,
-		)
+		match fullscreen {
+			Some((m, mode)) => {
+				glfw.window_hint(WindowHint::RedBits(Some(mode.red_bits)));
+				glfw.window_hint(WindowHint::GreenBits(Some(mode.green_bits)));
+				glfw.window_hint(WindowHint::BlueBits(Some(mode.blue_bits)));
+				glfw.window_hint(WindowHint::RefreshRate(Some(mode.refresh_rate)));
+				glfw.create_window(
+					mode.width,
+					mode.height,
+					"WanganArcadeLoader",
+					WindowMode::FullScreen(m),
+				)
+			}
+			None => glfw.create_window(
+				CONFIG.width,
+				CONFIG.height,
+				"WanganArcadeLoader",
+				WindowMode::Windowed,
+			),
+		}
 		.unwrap()
 	});
 	WINDOW_HANDLE = Some(window.get_x11_window());

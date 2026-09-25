@@ -28,3 +28,8 @@ panic = 'abort'
 strip = true
 codegen-units = 1
 incremental = true
+
+# Vendored retour fork with one fix: its "win64" function pointer impls no
+# longer compile for 32-bit targets on current Rust. See vendor/retour.
+[patch."https://github.com/BroGamer4256/retour-rs.git"]
+retour = { path = "vendor/retour" }

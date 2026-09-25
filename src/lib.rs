@@ -22,6 +22,7 @@ pub struct FileRedirect {
 }
 
 #[derive(serde::Deserialize)]
+#[serde(default)]
 pub struct Config {
 	fullscreen: bool,
 	input_emu: bool,
@@ -35,6 +36,12 @@ pub struct Config {
 	height: u32,
 
 	file_redirect: Option<Vec<FileRedirect>>,
+}
+
+impl Default for Config {
+	fn default() -> Self {
+		default_config()
+	}
 }
 
 // Why cant this be a trait impl? Thanks rust
@@ -493,8 +500,11 @@ const fn default_gameversion() -> GameVersion {
 #[ctor::ctor]
 unsafe fn init() {
 	if let Ok(toml) = std::fs::read_to_string("config.toml") {
-		if let Ok(toml) = toml::from_str(&toml) {
-			CONFIG = toml;
+		// Missing keys fall back to their defaults. A parse error keeps every
+		// default, so say why instead of silently ignoring the whole file.
+		match toml::from_str(&toml) {
+			Ok(toml) => CONFIG = toml,
+			Err(err) => eprintln!("config.toml not loaded, using defaults: {err}"),
 		}
 	}
 
