@@ -3,7 +3,6 @@
 
 use std::ffi::{c_char, c_void, CString};
 use std::ptr::null_mut;
-use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::OnceLock;
 
 #[repr(C)]
@@ -21,15 +20,13 @@ struct FuncTable {
 
 static TABLE: OnceLock<FuncTable> = OnceLock::new();
 
-pub static HOOKED: AtomicU32 = AtomicU32::new(0);
-pub static MISSING: AtomicU32 = AtomicU32::new(0);
-pub static FAILED: AtomicU32 = AtomicU32::new(0);
-
 pub unsafe fn init(func_tables: *const *const c_void) -> bool {
 	if func_tables.is_null() {
 		return false;
 	}
-	TABLE.set(std::ptr::read(func_tables as *const FuncTable)).is_ok()
+	TABLE
+		.set(std::ptr::read(func_tables as *const FuncTable))
+		.is_ok()
 }
 
 fn table() -> &'static FuncTable {
@@ -39,13 +36,17 @@ fn table() -> &'static FuncTable {
 /// Looks up a symbol in the loaded game modules, like dlsym(NULL, name).
 pub unsafe fn dl_sym(name: &str) -> *mut c_void {
 	let name = CString::new(name).unwrap();
-	table().dl_sym.map_or(null_mut(), |f| f(null_mut(), name.as_ptr()))
+	table()
+		.dl_sym
+		.map_or(null_mut(), |f| f(null_mut(), name.as_ptr()))
 }
 
 /// Returns LINE's implementation of a libc function (its own stub, or msys-2.0.dll's).
 pub unsafe fn resolve_stub(name: &str) -> *mut c_void {
 	let name = CString::new(name).unwrap();
-	table().resolve_stub.map_or(null_mut(), |f| f(name.as_ptr()))
+	table()
+		.resolve_stub
+		.map_or(null_mut(), |f| f(name.as_ptr()))
 }
 
 /// Hooks `target` with MinHook through LINE and returns the trampoline to the
@@ -62,26 +63,6 @@ pub unsafe fn hook(target: *mut c_void, detour: *const c_void) -> Option<*mut c_
 		None
 	} else {
 		Some(original)
-	}
-}
-
-pub unsafe fn hook_symbol(name: &str, detour: *const c_void) -> Option<*mut c_void> {
-	let target = dl_sym(name);
-	if target.is_null() {
-		MISSING.fetch_add(1, Ordering::Relaxed);
-		crate::log!("hook: symbol not found: {name}");
-		return None;
-	}
-	match hook(target, detour) {
-		Some(original) => {
-			HOOKED.fetch_add(1, Ordering::Relaxed);
-			Some(original)
-		}
-		None => {
-			FAILED.fetch_add(1, Ordering::Relaxed);
-			crate::log!("hook: failed to hook {name} at {target:p}");
-			None
-		}
 	}
 }
 
@@ -122,7 +103,7 @@ pub unsafe fn signature(pattern: &str) -> Option<*mut u8> {
 	}
 	let module = table.get_module_by_base_handle?(null_mut());
 	if module.is_null() {
-		crate::log!("signature: main module not found");
+		crate::wal_log!("signature: main module not found");
 		return None;
 	}
 	let start = table.get_module_start?(module) as *const u8;

@@ -7,20 +7,27 @@ edition = "2021"
 crate-type = ["cdylib"]
 
 [dependencies]
-ctor = "0.2"
-device_query = "2.0"
 glfw = "0.55"
+# 0.36's bundled build looks for the wrong library name when cross-compiling
+# for windows-gnu; 0.38 links SDL2 statically on both platforms.
+sdl2 = { version = "0.38", features = ["bundled", "static-link"] }
 libc = "0.2"
 phf = { version = "0.11", features = ["macros"] }
-region = "3.0"
-sdl2 = { version = "0.36", features = ["bundled", "static-link"] }
 serde = { version = "1.0", features = ["derive"] }
 toml = "0.8"
-retour = { git = "https://github.com/BroGamer4256/retour-rs.git" }
-x11 = "2.21"
 local-ip-address = "0.6"
 gl = "0.14"
+
+[target.'cfg(unix)'.dependencies]
+ctor = "0.2"
+region = "3.0"
+retour = { git = "https://github.com/BroGamer4256/retour-rs.git" }
 glob = "0.3"
+
+[build-dependencies]
+cc = "1.0"
+gl_generator = "0.14"
+khronos_api = "3.1"
 
 [profile.release]
 lto = true

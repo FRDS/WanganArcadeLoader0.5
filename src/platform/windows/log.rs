@@ -13,7 +13,7 @@ pub fn open(path: &str) {
 
 // Every line is flushed immediately so the log survives a crash.
 pub fn write(msg: &str) {
-	let line = format!("[wal_line] {msg}\n");
+	let line = format!("[wal_3dxp] {msg}\n");
 	_ = std::io::stdout().write_all(line.as_bytes());
 	if let Ok(mut log) = LOG_FILE.lock() {
 		write_file(&mut log, &line);
@@ -23,7 +23,7 @@ pub fn write(msg: &str) {
 /// For the crash handler: never waits on the log lock, in case the crash
 /// happened while it was held.
 pub fn write_nonblocking(msg: &str) {
-	let line = format!("[wal_line] {msg}\n");
+	let line = format!("[wal_3dxp] {msg}\n");
 	_ = std::io::stdout().write_all(line.as_bytes());
 	if let Ok(mut log) = LOG_FILE.try_lock() {
 		write_file(&mut log, &line);
@@ -37,9 +37,10 @@ fn write_file(log: &mut Option<File>, line: &str) {
 	}
 }
 
+/// Logs to stdout and wal_3dxp.log (Windows only).
 #[macro_export]
-macro_rules! log {
+macro_rules! wal_log {
 	($($arg:tt)*) => {
-		$crate::log::write(&format!($($arg)*))
+		$crate::platform::log::write(&format!($($arg)*))
 	};
 }

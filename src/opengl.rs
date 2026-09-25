@@ -1120,23 +1120,40 @@ pub unsafe fn load_gl_funcs(glfw: &Glfw) {
 	}
 }
 
+#[cfg(windows)]
+#[allow(non_upper_case_globals)]
+mod wrappers {
+	include!(concat!(env!("OUT_DIR"), "/gl_wrappers.rs"));
+}
+
 unsafe fn load_gl_func(func: &str, glfw: &Glfw) {
 	let real_func = glfw.get_proc_address_raw(func);
 	if real_func.is_null() {
 		println!("{func} not found by GLFW");
 		return;
 	}
-	let real_func = real_func as usize;
 
-	let module = dlopen(std::ptr::null(), RTLD_LAZY);
-	let func_str = CString::new(func).unwrap();
-	let func_ptr = dlsym(module, func_str.as_ptr());
+	let func_ptr = hook::get_symbol(func);
 	if func_ptr.is_null() {
 		println!("{func} not found in main");
 		return;
 	}
 
-	let real_func = real_func.to_le_bytes();
+	// Windows' OpenGL is stdcall and the game calls it cdecl, so the game is
+	// sent to a generated wrapper that makes the stdcall call.
+	#[cfg(windows)]
+	let real_func = match wrappers::wrapper(func) {
+		Some((wrapper, slot)) => {
+			slot.write(real_func as usize);
+			wrapper as *const c_void
+		}
+		None => {
+			println!("{func} has no cdecl wrapper, not redirected");
+			return;
+		}
+	};
+
+	let real_func = (real_func as usize).to_le_bytes();
 	let mut data = Vec::with_capacity(7);
 	data.push(0xB8);
 	for i in real_func {
@@ -1145,5 +1162,5 @@ unsafe fn load_gl_func(func: &str, glfw: &Glfw) {
 	data.push(0xFF);
 	data.push(0xE0);
 
-	hook::write_memory(func_ptr as *mut (), &data);
+	hook::write_memory(func_ptr, &data);
 }

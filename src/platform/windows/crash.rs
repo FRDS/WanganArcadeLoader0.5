@@ -2,7 +2,7 @@
 //! wal_line.log before Cygwin's handler takes over, so a crash anywhere in the
 //! process shows where it happened.
 
-use crate::line;
+use super::line;
 use std::ffi::c_void;
 use std::sync::atomic::{AtomicU32, Ordering};
 
@@ -14,7 +14,11 @@ extern "system" {
 	) -> *mut c_void;
 	fn GetModuleHandleExA(flags: u32, address: *const c_void, module: *mut *mut c_void) -> i32;
 	fn GetModuleFileNameA(module: *mut c_void, name: *mut u8, size: u32) -> u32;
-	fn VirtualQuery(address: *const c_void, info: *mut MemoryBasicInformation, size: usize) -> usize;
+	fn VirtualQuery(
+		address: *const c_void,
+		info: *mut MemoryBasicInformation,
+		size: usize,
+	) -> usize;
 }
 
 #[repr(C)]
@@ -32,7 +36,12 @@ struct MemoryBasicInformation {
 /// How many bytes from `address` onwards can be read without faulting.
 unsafe fn readable_bytes(address: usize) -> usize {
 	let mut info = MemoryBasicInformation::default();
-	if VirtualQuery(address as *const c_void, &mut info, size_of::<MemoryBasicInformation>()) == 0 {
+	if VirtualQuery(
+		address as *const c_void,
+		&mut info,
+		size_of::<MemoryBasicInformation>(),
+	) == 0
+	{
 		return 0;
 	}
 	const MEM_COMMIT: u32 = 0x1000;
@@ -70,7 +79,7 @@ static REPORTS: AtomicU32 = AtomicU32::new(0);
 pub fn install() {
 	unsafe {
 		if AddVectoredExceptionHandler(1, handler).is_null() {
-			crate::log!("crash handler not installed");
+			crate::wal_log!("crash handler not installed");
 		}
 	}
 }
@@ -168,6 +177,6 @@ unsafe extern "system" fn handler(pointers: *mut ExceptionPointers) -> i32 {
 		}
 	}
 
-	crate::log::write_nonblocking(&msg);
+	super::log::write_nonblocking(&msg);
 	EXCEPTION_CONTINUE_SEARCH
 }

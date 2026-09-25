@@ -1,12 +1,9 @@
-use device_query::DeviceQuery;
-use device_query::Keycode;
+use glfw::Key as Keycode;
 use phf::*;
 use sdl2::controller::Button;
 use sdl2::event::Event;
 use sdl2::*;
 use std::collections::*;
-use std::ffi::CString;
-use std::mem::MaybeUninit;
 
 #[derive(PartialEq, Eq, PartialOrd, Ord, Clone, Copy)]
 pub enum Axis {
@@ -27,12 +24,11 @@ pub enum Axis {
 #[allow(dead_code)]
 pub struct PollState {
 	sdl: Sdl,
-	video: VideoSubsystem,
 	gamepad: GameControllerSubsystem,
 	joystick: JoystickSubsystem,
 	events: EventPump,
 	controllers: BTreeMap<u32, controller::GameController>,
-	window: *mut sdl2::sys::SDL_Window,
+	window: *mut glfw::ffi::GLFWwindow,
 	deadzone: f32,
 	keyboard_state: Vec<Keycode>,
 	last_keyboard_state: Vec<Keycode>,
@@ -40,9 +36,6 @@ pub struct PollState {
 	last_button_state: Vec<Button>,
 	axis_state: BTreeMap<Axis, f32>,
 	last_axis_state: BTreeMap<Axis, f32>,
-	#[cfg(target_os = "linux")]
-	display: *mut x11::xlib::Display,
-	window_handle: *const libc::c_void,
 }
 
 #[derive(Clone)]
@@ -69,24 +62,24 @@ const MAPPINGS: Map<&str, KeyBinding> = phf_map! {
 	"F10" => KeyBinding::Keycode(Keycode::F10),
 	"F11" => KeyBinding::Keycode(Keycode::F11),
 	"F12" => KeyBinding::Keycode(Keycode::F12),
-	"NUM0" => KeyBinding::Keycode(Keycode::Key0),
-	"NUM1" => KeyBinding::Keycode(Keycode::Key1),
-	"NUM2" => KeyBinding::Keycode(Keycode::Key2),
-	"NUM3" => KeyBinding::Keycode(Keycode::Key3),
-	"NUM4" => KeyBinding::Keycode(Keycode::Key4),
-	"NUM5" => KeyBinding::Keycode(Keycode::Key5),
-	"NUM6" => KeyBinding::Keycode(Keycode::Key6),
-	"NUM7" => KeyBinding::Keycode(Keycode::Key7),
-	"NUM8" => KeyBinding::Keycode(Keycode::Key8),
-	"NUM9" => KeyBinding::Keycode(Keycode::Key9),
+	"NUM0" => KeyBinding::Keycode(Keycode::Num0),
+	"NUM1" => KeyBinding::Keycode(Keycode::Num1),
+	"NUM2" => KeyBinding::Keycode(Keycode::Num2),
+	"NUM3" => KeyBinding::Keycode(Keycode::Num3),
+	"NUM4" => KeyBinding::Keycode(Keycode::Num4),
+	"NUM5" => KeyBinding::Keycode(Keycode::Num5),
+	"NUM6" => KeyBinding::Keycode(Keycode::Num6),
+	"NUM7" => KeyBinding::Keycode(Keycode::Num7),
+	"NUM8" => KeyBinding::Keycode(Keycode::Num8),
+	"NUM9" => KeyBinding::Keycode(Keycode::Num9),
 	"UPARROW" => KeyBinding::Keycode(Keycode::Up),
 	"LEFTARROW" => KeyBinding::Keycode(Keycode::Left),
 	"DOWNARROW" => KeyBinding::Keycode(Keycode::Down),
 	"RIGHTARROW" => KeyBinding::Keycode(Keycode::Right),
 	"ENTER" => KeyBinding::Keycode(Keycode::Enter),
 	"SPACE" => KeyBinding::Keycode(Keycode::Space),
-	"CONTROL" => KeyBinding::Keycode(Keycode::LControl),
-	"SHIFT" => KeyBinding::Keycode(Keycode::LShift),
+	"CONTROL" => KeyBinding::Keycode(Keycode::LeftControl),
+	"SHIFT" => KeyBinding::Keycode(Keycode::LeftShift),
 	"TAB" => KeyBinding::Keycode(Keycode::Tab),
 	"ESCAPE" => KeyBinding::Keycode(Keycode::Escape),
 	"A" => KeyBinding::Keycode(Keycode::A),
@@ -163,9 +156,10 @@ pub fn parse_keybinding(toml: Vec<String>) -> KeyBindings {
 }
 
 impl PollState {
-	pub fn new(handle: *const libc::c_void, axis_deadzone: f32) -> Result<Self, String> {
+	/// Keyboard input is read from the game's GLFW window; SDL only handles
+	/// controllers.
+	pub fn new(window: *mut glfw::ffi::GLFWwindow, axis_deadzone: f32) -> Result<Self, String> {
 		let sdl = sdl2::init()?;
-		let video = sdl.video()?;
 		let joystick = sdl.joystick()?;
 		let gamepad = sdl.game_controller()?;
 		let events = sdl.event_pump()?;
@@ -187,18 +181,8 @@ impl PollState {
 				controllers.insert(i, controller);
 			}
 		}
-		let window = unsafe { sdl2::sys::SDL_CreateWindowFrom(handle) };
-
-		#[cfg(target_os = "linux")]
-		let display = {
-			let display = std::env::var("DISPLAY").expect("Not connected to X display?");
-			let display = CString::new(display).unwrap();
-			unsafe { x11::xlib::XOpenDisplay(display.as_ptr()) }
-		};
-
 		Ok(Self {
 			sdl,
-			video,
 			gamepad,
 			joystick,
 			events,
@@ -211,9 +195,6 @@ impl PollState {
 			last_button_state: Vec::with_capacity(32),
 			axis_state: BTreeMap::new(),
 			last_axis_state: BTreeMap::new(),
-			#[cfg(target_os = "linux")]
-			display,
-			window_handle: handle,
 		})
 	}
 
@@ -226,22 +207,16 @@ impl PollState {
 		self.last_button_state.extend(&self.button_state);
 		self.last_axis_state.extend(&self.axis_state);
 
-		#[cfg(target_os = "linux")]
-		{
-			let mut window: MaybeUninit<x11::xlib::Window> = MaybeUninit::uninit();
-			let mut state = MaybeUninit::uninit();
-			unsafe {
-				x11::xlib::XGetInputFocus(self.display, window.as_mut_ptr(), state.as_mut_ptr())
-			};
-			if unsafe { window.assume_init() } == self.window_handle as x11::xlib::Window {
-				self.keyboard_state = device_query::DeviceState::new().get_keys();
-			} else {
-				self.keyboard_state = Vec::new();
+		// GLFW only reports keys while the game window has focus.
+		self.keyboard_state.clear();
+		for binding in MAPPINGS.values() {
+			if let KeyBinding::Keycode(key) = binding {
+				let pressed =
+					unsafe { glfw::ffi::glfwGetKey(self.window, *key as i32) == glfw::ffi::PRESS };
+				if pressed && !self.keyboard_state.contains(key) {
+					self.keyboard_state.push(*key);
+				}
 			}
-		}
-		#[cfg(not(target_os = "linux"))]
-		{
-			self.keyboard_state = device_query::DeviceState::new().get_keys();
 		}
 
 		for event in self.events.poll_iter() {
@@ -310,8 +285,7 @@ impl PollState {
 					keymod: _,
 					repeat: _,
 				} => {
-					// Currently this is broken and waiting on sdl 3.20, see #5142 for updates
-					// for now im using device_query
+					// Keyboard input comes from GLFW instead.
 				}
 				_ => {}
 			}

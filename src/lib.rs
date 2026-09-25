@@ -11,9 +11,12 @@ pub mod card;
 pub mod hook;
 pub mod jamma;
 pub mod opengl;
+pub mod platform;
 pub mod poll;
 pub mod res;
 
+// Only the Linux interposers use redirects so far.
+#[cfg_attr(windows, allow(dead_code))]
 #[derive(serde::Deserialize)]
 pub struct FileRedirect {
 	from: String,
@@ -36,6 +39,10 @@ pub struct Config {
 	height: u32,
 
 	file_redirect: Option<Vec<FileRedirect>>,
+
+	/// Frames per second cap, 0 for none. Linux usually caps with MangoHUD
+	/// (see start.sh), so the default is 60 only on Windows.
+	fps_limit: u32,
 }
 
 impl Default for Config {
@@ -58,6 +65,7 @@ const fn default_config() -> Config {
 		width: 640,
 		height: 480,
 		file_redirect: None,
+		fps_limit: if cfg!(windows) { 60 } else { 0 },
 	}
 }
 
@@ -98,181 +106,6 @@ pub extern "C" fn undachi() -> c_int {
 
 pub extern "C" fn adachi() -> c_int {
 	true as c_int
-}
-
-#[no_mangle]
-unsafe extern "C" fn sigaction() -> c_int {
-	0
-}
-
-#[no_mangle]
-unsafe extern "C" fn system(command: *const c_char) -> c_int {
-	let cstr = CStr::from_ptr(command);
-	let str = cstr.to_str().unwrap();
-
-	if !CONFIG.block_sudo || str.starts_with("find") {
-		let command = str.replace("/tmp/", "./tmp/");
-		let command = CString::new(command).unwrap();
-
-		let system = CString::new("system").unwrap();
-		let system = dlsym(RTLD_NEXT, system.as_ptr());
-		let system: extern "C" fn(*const c_char) -> c_int = transmute(system);
-
-		let setenv = CString::new("setenv").unwrap();
-		let setenv = dlsym(RTLD_DEFAULT, setenv.as_ptr());
-		let setenv: extern "C" fn(*const c_char, *const c_char, c_int) -> c_int = transmute(setenv);
-
-		let preload = CString::new("LD_PRELOAD").unwrap();
-		let empty = CString::new("").unwrap();
-
-		setenv(preload.as_ptr(), empty.as_ptr(), 1);
-		system(command.as_ptr())
-	} else {
-		dbg!(str);
-		0
-	}
-}
-
-#[no_mangle]
-unsafe extern "C" fn fopen(filename: *const c_char, mode: *const c_char) -> *const () {
-	let filename = CStr::from_ptr(filename).to_str().unwrap();
-	let filename = if filename.starts_with("/tmp") {
-		CString::new(filename.replace("/tmp/", "./tmp/")).unwrap()
-	} else {
-		CString::new(filename).unwrap()
-	};
-
-	let fopen = CString::new("fopen").unwrap();
-	let fopen = dlsym(RTLD_NEXT, fopen.as_ptr());
-	let fopen: extern "C" fn(*const c_char, *const c_char) -> *const () = transmute(fopen);
-	fopen(filename.as_ptr(), mode)
-}
-
-#[no_mangle]
-unsafe extern "C" fn open(filename: *const c_char, flags: u32) -> *const () {
-	let filename = CStr::from_ptr(filename).to_str().unwrap();
-	let redirect = &CONFIG
-		.file_redirect
-		.as_ref()
-		.map(|redirects| {
-			redirects
-				.iter()
-				.filter(|redirect| redirect.from == filename)
-				.next()
-		})
-		.flatten();
-
-	let filename = if let Some(redirect) = redirect {
-		CString::new(redirect.to.clone()).unwrap()
-	} else if filename.starts_with("/tmp") {
-		CString::new(filename.replace("/tmp/", "./tmp/")).unwrap()
-	} else {
-		CString::new(filename).unwrap()
-	};
-
-	let flags = if let Some(redirect) = redirect {
-		if let Some(flags) = redirect.flags {
-			flags
-		} else {
-			flags
-		}
-	} else {
-		flags
-	};
-
-	let open = CString::new("open").unwrap();
-	let open = dlsym(RTLD_NEXT, open.as_ptr());
-	let open: extern "C" fn(*const c_char, u32) -> *const () = transmute(open);
-	open(filename.as_ptr(), flags)
-}
-
-#[no_mangle]
-unsafe extern "C" fn ioctl(fd: i32, op: u32, arg: *const c_void) -> i32 {
-	let ioctl = CString::new("ioctl").unwrap();
-	let ioctl = dlsym(RTLD_NEXT, ioctl.as_ptr());
-	let ioctl: extern "C" fn(i32, u32, *const c_void) -> i32 = transmute(ioctl);
-	let res = ioctl(fd, op, arg);
-	if (op == 0x5463 || op == 0x5464) && CONFIG.ignore_custom_ioctls {
-		0
-	} else {
-		res
-	}
-}
-
-#[no_mangle]
-unsafe extern "C" fn rename(old: *const c_char, new: *const c_char) -> c_int {
-	let old = CStr::from_ptr(old).to_str().unwrap();
-	let old = old.replace("/tmp/", "./tmp/");
-	let old = CString::new(old).unwrap();
-
-	let new = CStr::from_ptr(new).to_str().unwrap();
-	let new = new.replace("/tmp/", "./tmp/");
-	let new = CString::new(new).unwrap();
-
-	let rename = CString::new("rename").unwrap();
-	let rename = dlsym(RTLD_NEXT, rename.as_ptr());
-	let rename: extern "C" fn(*const c_char, *const c_char) -> c_int = transmute(rename);
-	rename(old.as_ptr(), new.as_ptr())
-}
-
-#[no_mangle]
-unsafe extern "C" fn _ZNSt13basic_filebufIcSt11char_traitsIcEE4openEPKcSt13_Ios_Openmode(
-	this: c_int,
-	filename: *const c_char,
-	mode: c_int,
-) -> *const () {
-	if let Ok(filename) = CStr::from_ptr(filename).to_str() {
-		let filename = if filename.starts_with("/tmp") {
-			CString::new(filename.replace("/tmp/", "./tmp/")).unwrap()
-		} else {
-			CString::new(filename).unwrap()
-		};
-
-		let open =
-			CString::new("_ZNSt13basic_filebufIcSt11char_traitsIcEE4openEPKcSt13_Ios_Openmode")
-				.unwrap();
-		let open = dlsym(RTLD_NEXT, open.as_ptr());
-		let open: extern "C" fn(c_int, *const c_char, c_int) -> *const () = transmute(open);
-		open(this, filename.as_ptr(), mode)
-	} else {
-		let open =
-			CString::new("_ZNSt13basic_filebufIcSt11char_traitsIcEE4openEPKcSt13_Ios_Openmode")
-				.unwrap();
-		let open = dlsym(RTLD_NEXT, open.as_ptr());
-		let open: extern "C" fn(c_int, *const c_char, c_int) -> *const () = transmute(open);
-		open(this, filename, mode)
-	}
-}
-
-#[no_mangle]
-unsafe extern "C" fn _ZNSt14basic_ifstreamIcSt11char_traitsIcEEC1EPKcSt13_Ios_Openmode(
-	this: c_int,
-	filename: *const c_char,
-	mode: c_int,
-) -> *const () {
-	if let Ok(filename) = CStr::from_ptr(filename).to_str() {
-		let filename = if filename.starts_with("/tmp") {
-			CString::new(filename.replace("/tmp/", "./tmp/")).unwrap()
-		} else if filename.starts_with("/proc/bus/usb/devices") {
-			CString::new("./tmp/usb-devices").unwrap()
-		} else {
-			CString::new(filename).unwrap()
-		};
-
-		let open =
-			CString::new("_ZNSt14basic_ifstreamIcSt11char_traitsIcEEC1EPKcSt13_Ios_Openmode")
-				.unwrap();
-		let open = dlsym(RTLD_NEXT, open.as_ptr());
-		let open: extern "C" fn(c_int, *const c_char, c_int) -> *const () = transmute(open);
-		open(this, filename.as_ptr(), mode)
-	} else {
-		let open =
-			CString::new("_ZNSt14basic_ifstreamIcSt11char_traitsIcEEC1EPKcSt13_Ios_Openmode")
-				.unwrap();
-		let open = dlsym(RTLD_NEXT, open.as_ptr());
-		let open: extern "C" fn(c_int, *const c_char, c_int) -> *const () = transmute(open);
-		open(this, filename, mode)
-	}
 }
 
 static mut HASP_ID: i32 = 1;
@@ -322,9 +155,9 @@ unsafe extern "C" fn hasp_read(
 	0
 }
 
-static mut ORIGINAL_CL_MAIN: Option<unsafe extern "C" fn(*mut *mut ())> = None;
+static mut ORIGINAL_CL_MAIN: *const () = std::ptr::null();
 unsafe extern "C" fn cl_main(log: *mut *mut ()) {
-	ORIGINAL_CL_MAIN.unwrap()(log);
+	platform::call_game::<_, ()>(ORIGINAL_CL_MAIN, (log,));
 	log.write(hook::get_symbol("_ZSt4cout"));
 }
 
@@ -497,8 +330,9 @@ const fn default_gameversion() -> GameVersion {
 	}
 }
 
-#[ctor::ctor]
-unsafe fn init() {
+/// Runs once before the game starts: from a constructor on Linux, and from
+/// LINE's OnPreExecute("main") on Windows.
+pub(crate) unsafe fn init() {
 	if let Ok(toml) = std::fs::read_to_string("config.toml") {
 		// Missing keys fall back to their defaults. A parse error keeps every
 		// default, so say why instead of silently ignoring the whole file.
@@ -569,6 +403,8 @@ unsafe fn init() {
 	};
 	KEYCONFIG = Some(keyconfig);
 
+	platform::init();
+
 	hook::hook_symbol("hasp_cleanup", undachi as *const ());
 	hook::hook_symbol("hasp_decrypt", undachi as *const ());
 	hook::hook_symbol("hasp_encrypt", undachi as *const ());
@@ -585,16 +421,13 @@ unsafe fn init() {
 	hook::hook_symbol("hasp_hasptime_to_datetime", undachi as *const ());
 	hook::hook_symbol("_ZNK6clHasp7isAvailEv", adachi as *const ());
 
-	if CONFIG.local_ip.is_some() || local_ip_address::local_ip().is_ok() {
+	if platform::network_available() {
 		hook::hook_symbol("_ZNK5clNet10getAddressEv", get_address as *const ());
 	} else {
 		hook::hook_symbol("_ZN18clSeqBootNetThread3runEPv", adachi as *const ());
 	}
 
-	ORIGINAL_CL_MAIN = Some(transmute(hook::hook_symbol(
-		"_ZN6clMainC1Ev",
-		cl_main as *const (),
-	)));
+	ORIGINAL_CL_MAIN = hook::hook_symbol("_ZN6clMainC1Ev", cl_main as *const ());
 
 	adm::init();
 	al::load_al_funcs();
@@ -613,23 +446,5 @@ unsafe fn init() {
 	let rom_info = rom_info.as_ref().unwrap();
 	let version = rom_info.into();
 	GAME_VERSION = version;
-	for plugin in glob::glob("plugins/*.so").unwrap() {
-		let plugin_name = plugin.unwrap().to_string_lossy().to_string();
-		let plugin = CString::new(plugin_name.clone()).unwrap();
-		let plugin = dlopen(plugin.as_ptr(), RTLD_LAZY);
-		if plugin.is_null() {
-			let error = dlerror();
-			let error = CStr::from_ptr(error).to_string_lossy().to_string();
-			panic!("{plugin_name} could not be loaded:  {error}");
-		}
-		let init = CString::new("init").unwrap();
-		let init = dlsym(plugin, init.as_ptr());
-		if init.is_null() {
-			let error = dlerror();
-			let error = CStr::from_ptr(error).to_string_lossy().to_string();
-			panic!("init does not exist in {plugin_name}: {error}");
-		}
-		let init: fn(*const GameVersion) = transmute(init);
-		init(&version);
-	}
+	platform::load_plugins(&version);
 }

@@ -41,6 +41,7 @@ jobs:
         # build
         cargo build --release --target i586-unknown-linux-gnu
         cargo clippy --release --target i586-unknown-linux-gnu -- -A clippy::not_unsafe_ptr_arg_deref -A clippy::missing_safety_doc -A clippy::implicit_saturating_sub -A clippy::missing_transmute_annotations --no-deps
+        cargo test --release --target i586-unknown-linux-gnu --lib
 
         mkdir -p out/
         cp target/i586-unknown-linux-gnu/release/libwal_3dxp.so out/
@@ -57,3 +58,74 @@ jobs:
       with:
         name: dist
         path: out
+
+  windows:
+    # 24.04's i686 mingw uses DWARF exceptions, which Rust's i686-pc-windows-gnu needs.
+    runs-on: ubuntu-24.04
+    env:
+      CARGO_TARGET_I686_PC_WINDOWS_GNU_LINKER: i686-w64-mingw32-gcc
+    steps:
+    - uses: actions/checkout@v4
+    - name: Install toolchain
+      run: |
+        sudo dpkg --add-architecture i386
+        sudo apt-get update
+        sudo apt-get install -y gcc-mingw-w64-i686 g++-mingw-w64-i686 cmake
+        sudo apt-get install -y --no-install-recommends wine32:i386 wine
+        rustup target add i686-pc-windows-gnu
+        rustup component add clippy
+
+    - name: Build
+      run: |
+        cargo build --release --target i686-pc-windows-gnu
+        cargo clippy --release --target i686-pc-windows-gnu -- -A clippy::not_unsafe_ptr_arg_deref -A clippy::missing_safety_doc -A clippy::implicit_saturating_sub -A clippy::missing_transmute_annotations --no-deps
+
+    - name: Check DLL
+      run: |
+        set -euo pipefail
+        dll=target/i686-pc-windows-gnu/release/wal_3dxp.dll
+        exports=$(i686-w64-mingw32-objdump -p "$dll" | sed -n '/\[Ordinal\/Name Pointer\] Table/,/^$/p')
+        for name in OnInitialize OnPreExecute OnDlOpen OnDlSym; do
+          echo "$exports" | grep -qw "$name" || { echo "missing export $name"; exit 1; }
+        done
+        # Only DLLs every Windows install has: SDL2 and GLFW are linked statically.
+        imports=$(i686-w64-mingw32-objdump -p "$dll" | sed -n 's/^\s*DLL Name: //p')
+        echo "$imports"
+        if echo "$imports" | grep -viE '^(kernel32|msvcrt|ntdll|bcryptprimitives|userenv|ws2_32|advapi32|cfgmgr32|gdi32|imm32|iphlpapi|ole32|oleaut32|setupapi|shell32|user32|version|winmm|api-ms-win-[a-z0-9-]+)\.dll$'; then
+          echo "unexpected import: users would need an extra DLL"; exit 1
+        fi
+
+    - name: Lint start.bat
+      run: |
+        set -euo pipefail
+        bat=dist-windows/start.bat
+        fail() { echo "start.bat: $1"; exit 1; }
+        file "$bat" | grep -q CRLF || fail "must use CRLF line endings"
+        # The game folder can contain ")", so these must never be expanded inside ( ) blocks.
+        code=$(grep -vi '^rem' "$bat")
+        if echo "$code" | grep -n '%CD%'; then fail "don't use %CD%"; fi
+        if [ "$(echo "$code" | grep -c '%~dp0')" -ne 1 ] || ! echo "$code" | grep -q '^cd /d "%~dp0"'; then
+          fail '%~dp0 may only appear in the initial cd /d "%~dp0"'
+        fi
+        if echo "$code" | grep -nE '\([[:space:]]*$'; then fail "no multi-line ( ) blocks"; fi
+
+    - name: Test under Wine
+      run: |
+        export WINEPREFIX="$RUNNER_TEMP/wine"
+        wineboot -i
+        WINEDEBUG=-all cargo test --release --target i686-pc-windows-gnu --lib --config 'target.i686-pc-windows-gnu.runner="wine"'
+        tests/mockline/run.sh target/i686-pc-windows-gnu/release/wal_3dxp.dll
+
+    - name: Package
+      run: |
+        mkdir -p out
+        cp target/i686-pc-windows-gnu/release/wal_3dxp.dll out/
+        cp -r dist/* out/
+        rm out/start.sh
+        cp dist-windows/start.bat dist-windows/fix-libso.ps1 dist-windows/README.md out/
+
+    - uses: actions/upload-artifact@v4
+      with:
+        name: dist-windows
+        path: out
+

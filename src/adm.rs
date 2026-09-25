@@ -1,3 +1,4 @@
+use crate::platform::call_game;
 use crate::*;
 use glfw::*;
 use std::mem::forget;
@@ -9,7 +10,8 @@ extern "C" fn adm_version() -> *const c_char {
 	ptr
 }
 
-pub static mut WINDOW_HANDLE: Option<*mut c_void> = None;
+/// The game window, for reading keyboard state in poll.rs.
+pub static mut GLFW_WINDOW: *mut glfw::ffi::GLFWwindow = std::ptr::null_mut();
 
 #[allow(non_snake_case)]
 #[repr(C)]
@@ -84,7 +86,7 @@ unsafe extern "C" fn adm_window() -> *mut AdmWindow {
 		}
 		.unwrap()
 	});
-	WINDOW_HANDLE = Some(window.get_x11_window());
+	GLFW_WINDOW = window.window_ptr();
 	window.make_current();
 	window.set_resizable(true);
 	glfw.set_swap_interval(SwapInterval::Sync(1));
@@ -210,78 +212,100 @@ unsafe extern "C" fn adm_swap_buffers(window_ptr: *mut AdmWindow) -> c_int {
 		gl::BindFramebuffer(gl::FRAMEBUFFER, 0);
 	}
 
+	limit_fps();
 	window.window.swap_buffers();
 	window.glfw.poll_events();
 	if window.window.should_close() {
 		let window = window_ptr.read().window;
 		drop(window);
-		exit(0);
+		platform::exit(0);
 	}
 
 	0
 }
 
-static mut CL_APP_INSTANCE: Option<extern "C" fn() -> *const c_void> = None;
-static mut CL_APP_IS_MAIN_THREAD: Option<extern "C" fn(*const c_void) -> bool> = None;
-static mut CL_MAIN_INSTANCE: *const *const *const c_void = std::ptr::null();
-static mut THREAD_MANAGER_CURRENT: Option<extern "C" fn(*const c_void) -> *const c_void> = None;
-static mut CALL_FROM_MAIN_THREAD: Option<
-	extern "C" fn(*const c_void, *const fn(*const c_void), *const c_void),
-> = None;
+static mut NEXT_FRAME: Option<std::time::Instant> = None;
 
-static mut ORIGINAL_DEL_SPRITE_MANAGER: Option<extern "C" fn(*const c_void)> = None;
+/// Waits until the next frame is due, so the game runs at `fps_limit` even
+/// when vsync follows a faster monitor.
+unsafe fn limit_fps() {
+	use std::time::{Duration, Instant};
+	if CONFIG.fps_limit == 0 {
+		return;
+	}
+	let frame = Duration::from_secs_f64(1.0 / CONFIG.fps_limit as f64);
+	let now = Instant::now();
+	let next = NEXT_FRAME.unwrap_or(now);
+	if next > now {
+		// Sleep most of the wait, then spin for precision.
+		let wait = next - now;
+		if wait > Duration::from_millis(2) {
+			std::thread::sleep(wait - Duration::from_millis(2));
+		}
+		while Instant::now() < next {
+			std::hint::spin_loop();
+		}
+	}
+	// If a frame ran long, restart the schedule instead of rushing to catch up.
+	let base = if next + frame < now { now } else { next };
+	NEXT_FRAME = Some(base + frame);
+}
+
+static mut CL_APP_INSTANCE: *const () = std::ptr::null();
+static mut CL_APP_IS_MAIN_THREAD: *const () = std::ptr::null();
+static mut CL_MAIN_INSTANCE: *const *const *const c_void = std::ptr::null();
+static mut THREAD_MANAGER_CURRENT: *const () = std::ptr::null();
+static mut CALL_FROM_MAIN_THREAD: *const () = std::ptr::null();
+
+unsafe fn is_main_thread() -> bool {
+	let cl_app: *const c_void = call_game(CL_APP_INSTANCE, ());
+	call_game(CL_APP_IS_MAIN_THREAD, (cl_app,))
+}
+
+/// Has the game's main thread call `f(args)`.
+unsafe fn call_from_main_thread(f: *const (), args: *const c_void) {
+	let thread_manager = CL_MAIN_INSTANCE.read().byte_offset(0x40).read();
+	let current: *const c_void = call_game(THREAD_MANAGER_CURRENT, (thread_manager,));
+	call_game::<_, ()>(CALL_FROM_MAIN_THREAD, (current, f, args));
+}
+
+static mut ORIGINAL_DEL_SPRITE_MANAGER: *const () = std::ptr::null();
 unsafe extern "C" fn del_sprite_manager(this: *const c_void) {
-	let cl_app = CL_APP_INSTANCE.unwrap()();
-	if CL_APP_IS_MAIN_THREAD.unwrap()(cl_app) {
-		ORIGINAL_DEL_SPRITE_MANAGER.unwrap()(this);
+	if is_main_thread() {
+		call_game::<_, ()>(ORIGINAL_DEL_SPRITE_MANAGER, (this,));
 	} else {
-		let thread_manager = CL_MAIN_INSTANCE.read().byte_offset(0x40).read();
-		let current = THREAD_MANAGER_CURRENT.unwrap()(thread_manager);
-		CALL_FROM_MAIN_THREAD.unwrap()(current, del_sprite_manager as *const _, this);
+		call_from_main_thread(del_sprite_manager as *const (), this);
 	}
 }
 
-static mut ORIGINAL_SAVE_IMAGE: Option<extern "C" fn(*const c_void, *const c_void)> = None;
+static mut ORIGINAL_SAVE_IMAGE: *const () = std::ptr::null();
 unsafe extern "C" fn save_image(render_buffer: *const c_void, filepath: *const c_void) {
-	let cl_app = CL_APP_INSTANCE.unwrap()();
-	if CL_APP_IS_MAIN_THREAD.unwrap()(cl_app) {
-		ORIGINAL_SAVE_IMAGE.unwrap()(render_buffer, filepath);
+	if is_main_thread() {
+		call_game::<_, ()>(ORIGINAL_SAVE_IMAGE, (render_buffer, filepath));
 	} else {
 		let args = Box::new((render_buffer, filepath));
-		let thread_manager = CL_MAIN_INSTANCE.read().byte_offset(0x40).read();
-		let current = THREAD_MANAGER_CURRENT.unwrap()(thread_manager);
-		CALL_FROM_MAIN_THREAD.unwrap()(
-			current,
-			save_image_main as *const _,
-			transmute(args.as_ref()),
-		);
+		call_from_main_thread(save_image_main as *const (), transmute(args.as_ref()));
 	}
 }
 
 unsafe extern "C" fn save_image_main(args: *const c_void) {
 	let args: &(*const c_void, *const c_void) = transmute(args);
 	let (render_buffer, filepath) = *args;
-	let cl_app = CL_APP_INSTANCE.unwrap()();
-	if CL_APP_IS_MAIN_THREAD.unwrap()(cl_app) {
-		ORIGINAL_SAVE_IMAGE.unwrap()(render_buffer, filepath);
+	if is_main_thread() {
+		call_game::<_, ()>(ORIGINAL_SAVE_IMAGE, (render_buffer, filepath));
 	} else {
 		panic!("Not main thread!");
 	}
 }
 
-static mut ORIGINAL_CREATE_TEXTURE_HANDLE: Option<extern "C" fn(*const c_void, i32, i32) -> i32> =
-	None;
+static mut ORIGINAL_CREATE_TEXTURE_HANDLE: *const () = std::ptr::null();
 unsafe extern "C" fn create_texture_handle(this: *const c_void, a1: i32, a2: i32) -> i32 {
-	let cl_app = CL_APP_INSTANCE.unwrap()();
-	if CL_APP_IS_MAIN_THREAD.unwrap()(cl_app) {
-		ORIGINAL_CREATE_TEXTURE_HANDLE.unwrap()(this, a1, a2)
+	if is_main_thread() {
+		call_game(ORIGINAL_CREATE_TEXTURE_HANDLE, (this, a1, a2))
 	} else {
 		let args = Box::new((this, a1, a2));
-		let thread_manager = CL_MAIN_INSTANCE.read().byte_offset(0x40).read();
-		let current = THREAD_MANAGER_CURRENT.unwrap()(thread_manager);
-		CALL_FROM_MAIN_THREAD.unwrap()(
-			current,
-			create_texture_handle_main as *const _,
+		call_from_main_thread(
+			create_texture_handle_main as *const (),
 			transmute(args.as_ref()),
 		);
 		1
@@ -291,28 +315,20 @@ unsafe extern "C" fn create_texture_handle(this: *const c_void, a1: i32, a2: i32
 unsafe extern "C" fn create_texture_handle_main(args: *const c_void) {
 	let args: &(*const c_void, i32, i32) = transmute(args);
 	let (this, a1, a2) = *args;
-	let cl_app = CL_APP_INSTANCE.unwrap()();
-	if CL_APP_IS_MAIN_THREAD.unwrap()(cl_app) {
-		ORIGINAL_CREATE_TEXTURE_HANDLE.unwrap()(this, a1, a2);
+	if is_main_thread() {
+		call_game::<_, i32>(ORIGINAL_CREATE_TEXTURE_HANDLE, (this, a1, a2));
 	} else {
 		panic!("Not main thread!");
 	}
 }
 
-static mut ORIGINAL_SET_TEXTURE: Option<extern "C" fn(*const c_void, i32, i32) -> i32> = None;
+static mut ORIGINAL_SET_TEXTURE: *const () = std::ptr::null();
 unsafe extern "C" fn set_texture(this: *const c_void, a1: i32, a2: i32) -> i32 {
-	let cl_app = CL_APP_INSTANCE.unwrap()();
-	if CL_APP_IS_MAIN_THREAD.unwrap()(cl_app) {
-		ORIGINAL_SET_TEXTURE.unwrap()(this, a1, a2)
+	if is_main_thread() {
+		call_game(ORIGINAL_SET_TEXTURE, (this, a1, a2))
 	} else {
 		let args = Box::new((this, a1, a2));
-		let thread_manager = CL_MAIN_INSTANCE.read().byte_offset(0x40).read();
-		let current = THREAD_MANAGER_CURRENT.unwrap()(thread_manager);
-		CALL_FROM_MAIN_THREAD.unwrap()(
-			current,
-			set_texture_main as *const _,
-			transmute(args.as_ref()),
-		);
+		call_from_main_thread(set_texture_main as *const (), transmute(args.as_ref()));
 		1
 	}
 }
@@ -320,17 +336,15 @@ unsafe extern "C" fn set_texture(this: *const c_void, a1: i32, a2: i32) -> i32 {
 unsafe extern "C" fn set_texture_main(args: *const c_void) {
 	let args: &(*const c_void, i32, i32) = transmute(args);
 	let (this, a1, a2) = *args;
-	let cl_app = CL_APP_INSTANCE.unwrap()();
-	if CL_APP_IS_MAIN_THREAD.unwrap()(cl_app) {
-		ORIGINAL_SET_TEXTURE.unwrap()(this, a1, a2);
+	if is_main_thread() {
+		call_game::<_, i32>(ORIGINAL_SET_TEXTURE, (this, a1, a2));
 	} else {
 		panic!("Not main thread!");
 	}
 }
 
-static mut ORIGINAL_SET_TEXTURE_REGION: Option<
-	extern "C" fn(*const c_void, i32, i32, i32, i32, i32, i32, *const c_void) -> i32,
-> = None;
+static mut ORIGINAL_SET_TEXTURE_REGION: *const () = std::ptr::null();
+#[allow(clippy::too_many_arguments)]
 unsafe extern "C" fn set_texture_region(
 	this: *const c_void,
 	a1: i32,
@@ -341,16 +355,15 @@ unsafe extern "C" fn set_texture_region(
 	a6: i32,
 	a7: *const c_void,
 ) -> i32 {
-	let cl_app = CL_APP_INSTANCE.unwrap()();
-	if CL_APP_IS_MAIN_THREAD.unwrap()(cl_app) {
-		ORIGINAL_SET_TEXTURE_REGION.unwrap()(this, a1, a2, a3, a4, a5, a6, a7)
+	if is_main_thread() {
+		call_game(
+			ORIGINAL_SET_TEXTURE_REGION,
+			(this, a1, a2, a3, a4, a5, a6, a7),
+		)
 	} else {
 		let args = Box::new((this, a1, a2, a3, a4, a5, a6, a7));
-		let thread_manager = CL_MAIN_INSTANCE.read().byte_offset(0x40).read();
-		let current = THREAD_MANAGER_CURRENT.unwrap()(thread_manager);
-		CALL_FROM_MAIN_THREAD.unwrap()(
-			current,
-			set_texture_region_main as *const _,
+		call_from_main_thread(
+			set_texture_region_main as *const (),
 			transmute(args.as_ref()),
 		);
 		1
@@ -360,9 +373,11 @@ unsafe extern "C" fn set_texture_region(
 unsafe extern "C" fn set_texture_region_main(args: *const c_void) {
 	let args: &(*const c_void, i32, i32, i32, i32, i32, i32, *const c_void) = transmute(args);
 	let (this, a1, a2, a3, a4, a5, a6, a7) = *args;
-	let cl_app = CL_APP_INSTANCE.unwrap()();
-	if CL_APP_IS_MAIN_THREAD.unwrap()(cl_app) {
-		ORIGINAL_SET_TEXTURE_REGION.unwrap()(this, a1, a2, a3, a4, a5, a6, a7);
+	if is_main_thread() {
+		call_game::<_, i32>(
+			ORIGINAL_SET_TEXTURE_REGION,
+			(this, a1, a2, a3, a4, a5, a6, a7),
+		);
 	} else {
 		panic!("Not main thread!");
 	}
@@ -388,40 +403,28 @@ pub unsafe fn init() {
 	hook::hook_symbol("admSwapBuffers", adm_swap_buffers as *const ());
 	hook::hook_symbol("admSetMonitorGamma", adachi as *const ());
 
-	CL_APP_INSTANCE = Some(transmute(hook::get_symbol(
-		"_ZN11clAppSystem11getInstanceEv",
-	)));
-	CL_APP_IS_MAIN_THREAD = Some(transmute(hook::get_symbol(
-		"_ZN11clAppSystem12isMainThreadEv",
-	)));
-	CL_MAIN_INSTANCE = transmute(hook::get_symbol(
-		"_ZN11teSingletonI10teSequenceI6clMainEE11sm_instanceE",
-	));
-	THREAD_MANAGER_CURRENT = Some(transmute(hook::get_symbol(
-		"_ZN17clNPThreadManager7currentEv",
-	)));
-	CALL_FROM_MAIN_THREAD = transmute(hook::get_symbol(
-		"_ZN10clNPThread26callFunctionFromMainThreadEPFvPvES0_",
-	));
+	CL_APP_INSTANCE = hook::get_symbol("_ZN11clAppSystem11getInstanceEv");
+	CL_APP_IS_MAIN_THREAD = hook::get_symbol("_ZN11clAppSystem12isMainThreadEv");
+	CL_MAIN_INSTANCE =
+		hook::get_symbol("_ZN11teSingletonI10teSequenceI6clMainEE11sm_instanceE") as *const _;
+	THREAD_MANAGER_CURRENT = hook::get_symbol("_ZN17clNPThreadManager7currentEv");
+	CALL_FROM_MAIN_THREAD =
+		hook::get_symbol("_ZN10clNPThread26callFunctionFromMainThreadEPFvPvES0_");
 
-	ORIGINAL_DEL_SPRITE_MANAGER = Some(transmute(hook::hook_symbol(
-		"_ZN15clSpriteManagerD1Ev",
-		del_sprite_manager as *const (),
-	)));
-	ORIGINAL_SAVE_IMAGE = Some(transmute(hook::hook_symbol(
-		"_ZN14clRenderBuffer9saveImageEPKc",
-		save_image as *const (),
-	)));
-	ORIGINAL_CREATE_TEXTURE_HANDLE = Some(transmute(hook::hook_symbol(
+	ORIGINAL_DEL_SPRITE_MANAGER =
+		hook::hook_symbol("_ZN15clSpriteManagerD1Ev", del_sprite_manager as *const ());
+	ORIGINAL_SAVE_IMAGE =
+		hook::hook_symbol("_ZN14clRenderBuffer9saveImageEPKc", save_image as *const ());
+	ORIGINAL_CREATE_TEXTURE_HANDLE = hook::hook_symbol(
 		"_ZN24clAlchemyTextureAccessor19createTextureHandleEii",
 		create_texture_handle as *const (),
-	)));
-	ORIGINAL_SET_TEXTURE = Some(transmute(hook::hook_symbol(
+	);
+	ORIGINAL_SET_TEXTURE = hook::hook_symbol(
 		"_ZN3Gap3Gfx19igAGLEVisualContext10setTextureEii",
 		set_texture as *const (),
-	)));
-	ORIGINAL_SET_TEXTURE_REGION = Some(transmute(hook::hook_symbol(
+	);
+	ORIGINAL_SET_TEXTURE_REGION = hook::hook_symbol(
 		"_ZN3Gap3Gfx19igAGLEVisualContext16setTextureRegionEiiiiiiPNS0_7igImageE",
 		set_texture_region as *const (),
-	)));
+	);
 }

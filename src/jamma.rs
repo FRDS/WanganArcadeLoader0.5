@@ -22,12 +22,11 @@ fn set_gear_bits(index: u8) -> u32 {
 }
 
 unsafe extern "C" fn handle_inputs(data: *mut u32) {
-	if adm::WINDOW_HANDLE.is_none() {
+	if adm::GLFW_WINDOW.is_null() {
 		return;
 	};
 	if SDL_STATE.is_none() {
-		SDL_STATE =
-			Some(poll::PollState::new(adm::WINDOW_HANDLE.unwrap(), CONFIG.deadzone).unwrap());
+		SDL_STATE = Some(poll::PollState::new(adm::GLFW_WINDOW, CONFIG.deadzone).unwrap());
 	}
 	let sdl = SDL_STATE.as_mut().unwrap();
 	let keyconfig = KEYCONFIG.as_ref().unwrap();
