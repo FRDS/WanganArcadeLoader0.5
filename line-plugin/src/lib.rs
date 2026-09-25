@@ -18,6 +18,7 @@ mod adm;
 mod al;
 mod boot;
 mod card;
+mod crash;
 mod line;
 
 #[link(name = "kernel32")]
@@ -58,6 +59,27 @@ pub unsafe extern "C" fn OnInitialize(version: c_int, func_tables: *const *const
 	);
 	if !line::init(func_tables) {
 		log!("OnInitialize: invalid LINE function table");
+		return;
+	}
+	crash::install();
+	unbuffer_msys_stdout();
+}
+
+/// LINE's own messages (loaded modules, symbols it can't link) go through msys
+/// stdio, which is fully buffered when redirected to a file and lost on a
+/// crash. Make it unbuffered. LINE's stubs are ready before plugins load.
+unsafe fn unbuffer_msys_stdout() {
+	const IONBF: c_int = 2; // newlib's _IONBF
+	let stdout = line::resolve_stub("stdout") as *const *mut c_void;
+	let setvbuf = line::resolve_stub("setvbuf");
+	if stdout.is_null() || setvbuf.is_null() || (*stdout).is_null() {
+		log!("msys stdout not found, LINE's messages stay buffered");
+		return;
+	}
+	let setvbuf: unsafe extern "C" fn(*mut c_void, *mut c_char, c_int, usize) -> c_int =
+		std::mem::transmute(setvbuf);
+	if setvbuf(*stdout, null_mut(), IONBF, 0) != 0 {
+		log!("setvbuf on msys stdout failed");
 	}
 }
 

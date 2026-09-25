@@ -53,11 +53,13 @@ Send back:
 
 - `wal_line.log` and `line_console.log` (normal run)
 - `wal_line_misalign.log` and `line_console_misalign.log` (misalign run)
+- `line.exe.stackdump` / `line_misalign.exe.stackdump`, if `line.exe` crashed
 
 ## Reading the result
 
 - **The normal run reaches GO:** Rust works as a LINE plugin. The misalign run then shows whether the alignment shim is strictly needed. We keep it either way.
 - **It stops earlier:** the last lines of `wal_line.log` show how far it got. Symbols missing from the Export build show up as `hook: symbol not found`. A Rust panic is logged as `PANIC: ...` with its location.
+- **It crashes:** the plugin logs `CRASH (first chance): ...` with the faulting address, the module it's in (a Windows DLL or the game's `main`), the registers and likely return addresses on the stack. The plugin also makes LINE's own console output unbuffered, so `line_console.log` keeps LINE's messages, such as `can't find symbol to import ...`, up to the crash.
 
 ## Building
 

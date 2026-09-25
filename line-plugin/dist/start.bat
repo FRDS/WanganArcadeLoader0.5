@@ -46,10 +46,13 @@ if not defined LINE_BASE_ADDRESS echo [start] ERROR: "line.exe calculate_elf" fa
 echo [start] plugin=%LINE_PLUGIN% base_address=%LINE_BASE_ADDRESS% base_size=%LINE_BASE_SIZE% library_path=%LINE_LIBRARY_PATH%
 
 if exist "wal_line.log" del "wal_line.log"
+if exist "line.exe.stackdump" del "line.exe.stackdump"
 echo [start] Running line.exe, console output goes to line_console%WAL_LOG_SUFFIX%.log
 line.exe > "line_console%WAL_LOG_SUFFIX%.log" 2>&1
 echo [start] line.exe exited with code %ERRORLEVEL%
 if not "%WAL_LOG_SUFFIX%"=="" if exist "wal_line.log" move /y "wal_line.log" "wal_line%WAL_LOG_SUFFIX%.log" >nul
+if not "%WAL_LOG_SUFFIX%"=="" if exist "line.exe.stackdump" move /y "line.exe.stackdump" "line%WAL_LOG_SUFFIX%.exe.stackdump" >nul
+if exist "line%WAL_LOG_SUFFIX%.exe.stackdump" echo [start] line.exe crashed. Also send line%WAL_LOG_SUFFIX%.exe.stackdump.
 
 findstr /c:"REACHED admCreateWindowi" "wal_line%WAL_LOG_SUFFIX%.log" >nul 2>&1 && goto result_go
 echo [start] RESULT: did not reach window creation. Send wal_line%WAL_LOG_SUFFIX%.log and line_console%WAL_LOG_SUFFIX%.log.

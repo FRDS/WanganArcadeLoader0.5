@@ -14,14 +14,26 @@ pub fn open(path: &str) {
 // Every line is flushed immediately so the log survives a crash.
 pub fn write(msg: &str) {
 	let line = format!("[wal_line] {msg}\n");
-	let mut stdout = std::io::stdout();
-	_ = stdout.write_all(line.as_bytes());
-	_ = stdout.flush();
+	_ = std::io::stdout().write_all(line.as_bytes());
 	if let Ok(mut log) = LOG_FILE.lock() {
-		if let Some(file) = log.as_mut() {
-			_ = file.write_all(line.as_bytes());
-			_ = file.flush();
-		}
+		write_file(&mut log, &line);
+	}
+}
+
+/// For the crash handler: never waits on the log lock, in case the crash
+/// happened while it was held.
+pub fn write_nonblocking(msg: &str) {
+	let line = format!("[wal_line] {msg}\n");
+	_ = std::io::stdout().write_all(line.as_bytes());
+	if let Ok(mut log) = LOG_FILE.try_lock() {
+		write_file(&mut log, &line);
+	}
+}
+
+fn write_file(log: &mut Option<File>, line: &str) {
+	if let Some(file) = log.as_mut() {
+		_ = file.write_all(line.as_bytes());
+		_ = file.flush();
 	}
 }
 

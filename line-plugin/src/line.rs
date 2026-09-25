@@ -99,6 +99,20 @@ fn parse_pattern(pattern: &str) -> Option<Vec<Option<u8>>> {
 		.collect()
 }
 
+/// Start and size of the main module's first loaded segment (where its code is).
+pub fn main_module_range() -> Option<(usize, usize)> {
+	let table = TABLE.get()?;
+	unsafe {
+		let module = table.get_module_by_base_handle?(null_mut());
+		if module.is_null() {
+			return None;
+		}
+		let start = table.get_module_start?(module) as usize;
+		let size = table.get_module_size?(module) as usize;
+		(start != 0).then_some((start, size))
+	}
+}
+
 /// Scans the main module for a byte pattern.
 pub unsafe fn signature(pattern: &str) -> Option<*mut u8> {
 	let table = table();
