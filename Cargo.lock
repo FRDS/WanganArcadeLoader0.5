@@ -16,9 +16,9 @@ checksum = "1fd0f2584146f6f2ef48085050886acf353beff7305ebd1ae69500e27c67f64b"
 
 [[package]]
 name = "cc"
-version = "1.0.95"
+version = "1.0.98"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d32a725bc159af97c3e629873bb9f88fb8cf8a4867175f76dc987815ea07c83b"
+checksum = "41c270e7540d725e65ac7f1b212ac8ce349719624d7bcff99f8e2e488e8cf03f"
 
 [[package]]
 name = "cfg-if"
@@ -99,26 +99,53 @@ dependencies = [
 ]
 
 [[package]]
-name = "glfw"
-version = "0.54.0"
+name = "gl"
+version = "0.14.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a2c5cdd9262ab473ecc9b31a9c27e336dae555b5b136ec3b51dd949c4ab8f8bd"
+checksum = "a94edab108827d67608095e269cf862e60d920f144a5026d3dbcfd8b877fb404"
+dependencies = [
+ "gl_generator",
+]
+
+[[package]]
+name = "gl_generator"
+version = "0.14.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1a95dfc23a2b4a9a2f5ab41d194f8bfda3cabec42af4e39f08c339eb2a0c124d"
+dependencies = [
+ "khronos_api",
+ "log",
+ "xml-rs",
+]
+
+[[package]]
+name = "glfw"
+version = "0.55.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2a310dfc7966e5340f5d0e314fa7eed8888f1cd3bfcaa433d35cbd32d430e50c"
 dependencies = [
  "bitflags",
  "glfw-sys",
  "objc",
- "raw-window-handle",
+ "raw-window-handle 0.5.2",
+ "raw-window-handle 0.6.2",
  "winapi",
 ]
 
 [[package]]
 name = "glfw-sys"
-version = "4.0.0+3.3.5"
+version = "5.0.0+3.3.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5abed6d39a50226676aab893d6b4ad154da7e93fcdfed90d7696758a1b477ed1"
+checksum = "1dfc32d45fb58ff38b112696907963a7d671e9cf742b16f882062169a053cf88"
 dependencies = [
  "cmake",
 ]
+
+[[package]]
+name = "glob"
+version = "0.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d2fabcfbdc87f4758337ca535fb41a6d701b65693ce38287d856d1674551ec9b"
 
 [[package]]
 name = "hashbrown"
@@ -144,6 +171,12 @@ dependencies = [
  "equivalent",
  "hashbrown",
 ]
+
+[[package]]
+name = "khronos_api"
+version = "3.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e2db585e1d738fc771bf08a151420d3ed193d9d895a36df7f6f8a9456b911ddc"
 
 [[package]]
 name = "lazy_static"
@@ -345,6 +378,12 @@ name = "raw-window-handle"
 version = "0.5.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f2ff9a1f06a88b01621b7ae906ef0211290d1c8a168a15542486a8f61c0833b9"
+
+[[package]]
+name = "raw-window-handle"
+version = "0.6.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "20675572f6f24e9e76ef639bc5552774ed45f1c30e2951e1e99c59888861c539"
 
 [[package]]
 name = "readkey"
@@ -556,7 +595,9 @@ version = "0.1.0"
 dependencies = [
  "ctor",
  "device_query",
+ "gl",
  "glfw",
+ "glob",
  "libc",
  "local-ip-address",
  "phf",
@@ -756,3 +797,9 @@ dependencies = [
  "libc",
  "pkg-config",
 ]
+
+[[package]]
+name = "xml-rs"
+version = "0.8.20"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "791978798f0597cfc70478424c2b4fdc2b7a8024aaff78497ef00f24ef674193"

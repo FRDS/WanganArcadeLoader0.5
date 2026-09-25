@@ -11,12 +11,6 @@ extern "C" fn adm_version() -> *const c_char {
 
 pub static mut WINDOW_HANDLE: Option<*mut c_void> = None;
 
-#[repr(C)]
-struct AdmDevice {
-	ident: [u8; 4], // DEVI
-	glfw: Glfw,
-}
-
 #[allow(non_snake_case)]
 #[repr(C)]
 #[derive(Default)]
@@ -35,17 +29,9 @@ struct AdmChooseMode {
 #[repr(C)]
 struct AdmWindow {
 	ident: [u8; 4], // WNDW
+	glfw: Glfw,
 	window: PWindow,
 	fbo: u32,
-}
-
-extern "C" fn adm_device() -> *const AdmDevice {
-	let glfw = glfw::init(glfw::fail_on_errors).unwrap();
-	let adm = AdmDevice {
-		ident: [b'D', b'E', b'V', b'I'],
-		glfw,
-	};
-	Box::leak(Box::new(adm))
 }
 
 extern "C" fn adm_config() -> *const *const AdmChooseMode {
@@ -61,97 +47,64 @@ extern "C" fn adm_fb_config() -> *const u8 {
 	Box::leak(Box::new(0))
 }
 
-unsafe extern "C" fn adm_window(device: *mut AdmDevice) -> *const AdmWindow {
-	let device = device.as_mut().unwrap();
-	let monitor = Monitor::from_primary();
-	let window_mode = if CONFIG.fullscreen {
-		WindowMode::FullScreen(&monitor)
-	} else {
-		WindowMode::Windowed
-	};
-	device.glfw.window_hint(WindowHint::Resizable(false)); // Force floating on tiling window managers
-	let (mut window, _) = device
-		.glfw
-		.create_window(
+unsafe extern "C" fn adm_window() -> *mut AdmWindow {
+	let mut glfw = glfw::init(glfw::fail_on_errors).unwrap();
+	glfw.window_hint(WindowHint::Resizable(false)); // Force floating on tiling window managers
+	let (mut window, _) = glfw.with_primary_monitor(|glfw, m| {
+		let window_mode = if CONFIG.fullscreen && m.is_some() {
+			WindowMode::FullScreen(m.unwrap())
+		} else {
+			WindowMode::Windowed
+		};
+		glfw.create_window(
 			CONFIG.width,
 			CONFIG.height,
 			"WanganArcadeLoader",
 			window_mode,
 		)
-		.unwrap();
-
-	if CONFIG.fullscreen {
-		window.set_monitor(
-			window_mode, 
-			0, 
-			0, 
-			CONFIG.width, 
-			CONFIG.height, 
-			None
-		);
-	}
-
+		.unwrap()
+	});
 	WINDOW_HANDLE = Some(window.get_x11_window());
 	window.make_current();
 	window.set_resizable(true);
-	device.glfw.set_swap_interval(SwapInterval::Sync(1));
+	glfw.set_swap_interval(SwapInterval::Sync(1));
 
-	gl::load_gl_funcs(&device.glfw);
-
-	BIND_FRAMEBUFFER = Some(transmute(
-		device.glfw.get_proc_address_raw("glBindFramebuffer"),
-	));
-	BLIT_FRAMEBUFFER = Some(transmute(
-		device.glfw.get_proc_address_raw("glBlitFramebuffer"),
-	));
-	CLEAR_BUFFER = Some(transmute(
-		device.glfw.get_proc_address_raw("glClearBufferfv"),
-	));
+	opengl::load_gl_funcs(&glfw);
+	gl::load_with(|s| glfw.get_proc_address_raw(s));
 
 	let mut fbo = 0;
 	let mut texture = 0;
+	gl::GenFramebuffers(1, &mut fbo);
+	gl::BindFramebuffer(gl::FRAMEBUFFER, fbo);
 
-	let bind_framebuffer = BIND_FRAMEBUFFER.unwrap();
-	let gen_framebuffer: extern "C" fn(i32, *mut u32) =
-		transmute(device.glfw.get_proc_address_raw("glGenFramebuffers"));
-	let gen_texture: extern "C" fn(i32, *mut u32) =
-		transmute(device.glfw.get_proc_address_raw("glGenTextures"));
-	let bind_texture: extern "C" fn(i32, u32) =
-		transmute(device.glfw.get_proc_address_raw("glBindTexture"));
-	let tex_image: extern "C" fn(i32, i32, i32, u32, u32, i32, i32, i32, *const c_void) =
-		transmute(device.glfw.get_proc_address_raw("glTexImage2D"));
-	let framebuffer_texture: extern "C" fn(i32, i32, i32, u32, i32) =
-		transmute(device.glfw.get_proc_address_raw("glFramebufferTexture2D"));
-
-	gen_framebuffer(1, &mut fbo);
-	bind_framebuffer(GL_FRAMEBUFFER, fbo);
-
-	gen_texture(1, &mut texture);
-	bind_texture(GL_TEXTURE_2D, texture);
-	tex_image(
-		GL_TEXTURE_2D,
+	gl::GenTextures(1, &mut texture);
+	gl::BindTexture(gl::TEXTURE_2D, texture);
+	gl::TexImage2D(
+		gl::TEXTURE_2D,
 		0,
-		GL_RGB,
-		CONFIG.width,
-		CONFIG.height,
+		gl::RGB as i32,
+		CONFIG.width as i32,
+		CONFIG.height as i32,
 		0,
-		GL_RGB,
-		GL_UNSIGNED_BYTE,
+		gl::RGB,
+		gl::UNSIGNED_BYTE,
 		std::ptr::null(),
 	);
-
-	framebuffer_texture(
-		GL_FRAMEBUFFER,
-		GL_COLOR_ATTACHMENT0,
-		GL_TEXTURE_2D,
+	gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_MIN_FILTER, gl::LINEAR as i32);
+	gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_MAG_FILTER, gl::LINEAR as i32);
+	gl::FramebufferTexture2D(
+		gl::FRAMEBUFFER,
+		gl::COLOR_ATTACHMENT0,
+		gl::TEXTURE_2D,
 		texture,
 		0,
 	);
-	bind_framebuffer(GL_FRAMEBUFFER, 0);
-	bind_texture(GL_TEXTURE_2D, 0);
+	gl::BindTexture(gl::TEXTURE_2D, 0);
+	gl::BindFramebuffer(gl::FRAMEBUFFER, 0);
 
 	let adm = AdmWindow {
 		ident: [b'W', b'N', b'D', b'W'],
+		glfw,
 		window,
 		fbo,
 	};
@@ -159,91 +112,239 @@ unsafe extern "C" fn adm_window(device: *mut AdmDevice) -> *const AdmWindow {
 	Box::leak(Box::new(adm))
 }
 
-static mut BIND_FRAMEBUFFER: Option<unsafe extern "C" fn(i32, u32)> = None;
-static mut BLIT_FRAMEBUFFER: Option<
-	unsafe extern "C" fn(i32, i32, i32, i32, i32, i32, i32, i32, i32, i32),
-> = None;
-static mut CLEAR_BUFFER: Option<unsafe extern "C" fn(i32, i32, *const f32)> = None;
+unsafe extern "C" fn adm_swap_buffers(window_ptr: *mut AdmWindow) -> c_int {
+	let window = window_ptr.as_mut().unwrap();
 
-const GL_TEXTURE_2D: i32 = 0x0DE1;
-const GL_UNSIGNED_BYTE: i32 = 0x1401;
-const GL_COLOR: i32 = 0x1800;
-const GL_RGB: i32 = 0x1907;
-const GL_NEAREST: i32 = 0x2600;
-const GL_COLOR_BUFFER_BIT: i32 = 0x4000;
-const GL_READ_FRAMEBUFFER: i32 = 0x8CA8;
-const GL_DRAW_FRAMEBUFFER: i32 = 0x8CA9;
-const GL_COLOR_ATTACHMENT0: i32 = 0x8CE0;
-const GL_FRAMEBUFFER: i32 = 0x8D40;
+	let graphics =
+		hook::get_symbol("_ZN11teSingletonI10clGraphicsE11sm_instanceE") as *mut *mut u16;
+	let graphics = graphics.read();
 
-unsafe extern "C" fn adm_swap_buffers(window: *mut AdmWindow) -> c_int {
-	let window = window.as_mut().unwrap();
-	let (window_width, window_height) = window.window.get_size();
-	let window_ar = window_width as f32 / window_height as f32;
-	let ar = CONFIG.width as f32 / CONFIG.height as f32;
-
-	let (viewport_width, viewport_height, viewport_x, viewport_y) = if window_ar > ar {
-		let viewport_width: i32 = ((window_height as f32) * ar) as i32;
-		let viewport_x = ((window_width - viewport_width) as f32 / 2.0) as i32;
-		(viewport_width, window_height, viewport_x, 0)
+	// Upscaling + black bars only if the game isnt using a saved frame
+	let should_blit = if GAME_VERSION.major == GameMajor::WM3 {
+		graphics.byte_offset(0x48).read() != 0
 	} else {
-		let viewport_height = ((window_width as f32) / ar) as i32;
-		let viewport_y = ((window_height - viewport_height) as f32 / 2.0) as i32;
-		(window_width, viewport_height, 0, viewport_y)
+		if graphics.byte_offset(0x54).read() != 0 {
+			true
+		} else {
+			let graphics = graphics as *mut *mut u32;
+			let buffer = graphics.byte_offset(0x0C).read();
+			let buffer = if buffer.is_null() {
+				graphics.byte_offset(0x08).read()
+			} else {
+				buffer
+			};
+
+			// If frame is saved dont blit
+			buffer.byte_offset(0x04).read() == 0
+		}
 	};
 
-	let bind = BIND_FRAMEBUFFER.unwrap();
-	let blit = BLIT_FRAMEBUFFER.unwrap();
-	let clear = CLEAR_BUFFER.unwrap();
+	if should_blit {
+		let (window_width, window_height) = window.window.get_size();
+		let window_ar = window_width as f32 / window_height as f32;
+		let ar = CONFIG.width as f32 / CONFIG.height as f32;
 
-	bind(GL_READ_FRAMEBUFFER, 0);
-	bind(GL_DRAW_FRAMEBUFFER, window.fbo);
-	blit(
-		0,
-		0,
-		CONFIG.width as i32,
-		CONFIG.height as i32,
-		0,
-		0,
-		CONFIG.width as i32,
-		CONFIG.height as i32,
-		GL_COLOR_BUFFER_BIT,
-		GL_NEAREST,
-	);
+		let (viewport_width, viewport_height, viewport_x, viewport_y) = if window_ar > ar {
+			let viewport_width: i32 = ((window_height as f32) * ar) as i32;
+			let viewport_x = ((window_width - viewport_width) as f32 / 2.0) as i32;
+			(viewport_width, window_height, viewport_x, 0)
+		} else {
+			let viewport_height = ((window_width as f32) / ar) as i32;
+			let viewport_y = ((window_height - viewport_height) as f32 / 2.0) as i32;
+			(window_width, viewport_height, 0, viewport_y)
+		};
 
-	bind(GL_FRAMEBUFFER, 0);
-	let clear_color = [0.0, 0.0, 0.0, 1.0];
-	clear(GL_COLOR, 0, clear_color.as_ptr());
+		gl::BindFramebuffer(gl::READ_FRAMEBUFFER, 0);
+		gl::BindFramebuffer(gl::DRAW_FRAMEBUFFER, window.fbo);
+		gl::BlitFramebuffer(
+			0,
+			0,
+			CONFIG.width as i32,
+			CONFIG.height as i32,
+			0,
+			0,
+			CONFIG.width as i32,
+			CONFIG.height as i32,
+			gl::COLOR_BUFFER_BIT,
+			gl::NEAREST,
+		);
 
-	bind(GL_READ_FRAMEBUFFER, window.fbo);
-	bind(GL_DRAW_FRAMEBUFFER, 0);
-	blit(
-		0,
-		0,
-		CONFIG.width as i32,
-		CONFIG.height as i32,
-		viewport_x,
-		viewport_y,
-		viewport_x + viewport_width,
-		viewport_y + viewport_height,
-		GL_COLOR_BUFFER_BIT,
-		GL_NEAREST,
-	);
+		gl::BindFramebuffer(gl::FRAMEBUFFER, 0);
+		gl::Clear(gl::COLOR_BUFFER_BIT);
 
-	bind(GL_FRAMEBUFFER, 0);
+		gl::BindFramebuffer(gl::READ_FRAMEBUFFER, window.fbo);
+		gl::BindFramebuffer(gl::DRAW_FRAMEBUFFER, 0);
+		gl::BlitFramebuffer(
+			0,
+			0,
+			CONFIG.width as i32,
+			CONFIG.height as i32,
+			viewport_x,
+			viewport_y,
+			viewport_x + viewport_width,
+			viewport_y + viewport_height,
+			gl::COLOR_BUFFER_BIT,
+			gl::NEAREST,
+		);
+
+		gl::BindFramebuffer(gl::FRAMEBUFFER, 0);
+	}
 
 	window.window.swap_buffers();
+	window.glfw.poll_events();
+	if window.window.should_close() {
+		let window = window_ptr.read().window;
+		drop(window);
+		exit(0);
+	}
 
 	0
 }
 
 static mut CL_APP_INSTANCE: Option<extern "C" fn() -> *const c_void> = None;
 static mut CL_APP_IS_MAIN_THREAD: Option<extern "C" fn(*const c_void) -> bool> = None;
+static mut CL_MAIN_INSTANCE: *const *const *const c_void = std::ptr::null();
+static mut THREAD_MANAGER_CURRENT: Option<extern "C" fn(*const c_void) -> *const c_void> = None;
+static mut CALL_FROM_MAIN_THREAD: Option<
+	extern "C" fn(*const c_void, *const fn(*const c_void), *const c_void),
+> = None;
+
 static mut ORIGINAL_DEL_SPRITE_MANAGER: Option<extern "C" fn(*const c_void)> = None;
 unsafe extern "C" fn del_sprite_manager(this: *const c_void) {
 	let cl_app = CL_APP_INSTANCE.unwrap()();
 	if CL_APP_IS_MAIN_THREAD.unwrap()(cl_app) {
 		ORIGINAL_DEL_SPRITE_MANAGER.unwrap()(this);
+	} else {
+		let thread_manager = CL_MAIN_INSTANCE.read().byte_offset(0x40).read();
+		let current = THREAD_MANAGER_CURRENT.unwrap()(thread_manager);
+		CALL_FROM_MAIN_THREAD.unwrap()(current, del_sprite_manager as *const _, this);
+	}
+}
+
+static mut ORIGINAL_SAVE_IMAGE: Option<extern "C" fn(*const c_void, *const c_void)> = None;
+unsafe extern "C" fn save_image(render_buffer: *const c_void, filepath: *const c_void) {
+	let cl_app = CL_APP_INSTANCE.unwrap()();
+	if CL_APP_IS_MAIN_THREAD.unwrap()(cl_app) {
+		ORIGINAL_SAVE_IMAGE.unwrap()(render_buffer, filepath);
+	} else {
+		let args = Box::new((render_buffer, filepath));
+		let thread_manager = CL_MAIN_INSTANCE.read().byte_offset(0x40).read();
+		let current = THREAD_MANAGER_CURRENT.unwrap()(thread_manager);
+		CALL_FROM_MAIN_THREAD.unwrap()(
+			current,
+			save_image_main as *const _,
+			transmute(args.as_ref()),
+		);
+	}
+}
+
+unsafe extern "C" fn save_image_main(args: *const c_void) {
+	let args: &(*const c_void, *const c_void) = transmute(args);
+	let (render_buffer, filepath) = *args;
+	let cl_app = CL_APP_INSTANCE.unwrap()();
+	if CL_APP_IS_MAIN_THREAD.unwrap()(cl_app) {
+		ORIGINAL_SAVE_IMAGE.unwrap()(render_buffer, filepath);
+	} else {
+		panic!("Not main thread!");
+	}
+}
+
+static mut ORIGINAL_CREATE_TEXTURE_HANDLE: Option<extern "C" fn(*const c_void, i32, i32) -> i32> =
+	None;
+unsafe extern "C" fn create_texture_handle(this: *const c_void, a1: i32, a2: i32) -> i32 {
+	let cl_app = CL_APP_INSTANCE.unwrap()();
+	if CL_APP_IS_MAIN_THREAD.unwrap()(cl_app) {
+		ORIGINAL_CREATE_TEXTURE_HANDLE.unwrap()(this, a1, a2)
+	} else {
+		let args = Box::new((this, a1, a2));
+		let thread_manager = CL_MAIN_INSTANCE.read().byte_offset(0x40).read();
+		let current = THREAD_MANAGER_CURRENT.unwrap()(thread_manager);
+		CALL_FROM_MAIN_THREAD.unwrap()(
+			current,
+			create_texture_handle_main as *const _,
+			transmute(args.as_ref()),
+		);
+		1
+	}
+}
+
+unsafe extern "C" fn create_texture_handle_main(args: *const c_void) {
+	let args: &(*const c_void, i32, i32) = transmute(args);
+	let (this, a1, a2) = *args;
+	let cl_app = CL_APP_INSTANCE.unwrap()();
+	if CL_APP_IS_MAIN_THREAD.unwrap()(cl_app) {
+		ORIGINAL_CREATE_TEXTURE_HANDLE.unwrap()(this, a1, a2);
+	} else {
+		panic!("Not main thread!");
+	}
+}
+
+static mut ORIGINAL_SET_TEXTURE: Option<extern "C" fn(*const c_void, i32, i32) -> i32> = None;
+unsafe extern "C" fn set_texture(this: *const c_void, a1: i32, a2: i32) -> i32 {
+	let cl_app = CL_APP_INSTANCE.unwrap()();
+	if CL_APP_IS_MAIN_THREAD.unwrap()(cl_app) {
+		ORIGINAL_SET_TEXTURE.unwrap()(this, a1, a2)
+	} else {
+		let args = Box::new((this, a1, a2));
+		let thread_manager = CL_MAIN_INSTANCE.read().byte_offset(0x40).read();
+		let current = THREAD_MANAGER_CURRENT.unwrap()(thread_manager);
+		CALL_FROM_MAIN_THREAD.unwrap()(
+			current,
+			set_texture_main as *const _,
+			transmute(args.as_ref()),
+		);
+		1
+	}
+}
+
+unsafe extern "C" fn set_texture_main(args: *const c_void) {
+	let args: &(*const c_void, i32, i32) = transmute(args);
+	let (this, a1, a2) = *args;
+	let cl_app = CL_APP_INSTANCE.unwrap()();
+	if CL_APP_IS_MAIN_THREAD.unwrap()(cl_app) {
+		ORIGINAL_SET_TEXTURE.unwrap()(this, a1, a2);
+	} else {
+		panic!("Not main thread!");
+	}
+}
+
+static mut ORIGINAL_SET_TEXTURE_REGION: Option<
+	extern "C" fn(*const c_void, i32, i32, i32, i32, i32, i32, *const c_void) -> i32,
+> = None;
+unsafe extern "C" fn set_texture_region(
+	this: *const c_void,
+	a1: i32,
+	a2: i32,
+	a3: i32,
+	a4: i32,
+	a5: i32,
+	a6: i32,
+	a7: *const c_void,
+) -> i32 {
+	let cl_app = CL_APP_INSTANCE.unwrap()();
+	if CL_APP_IS_MAIN_THREAD.unwrap()(cl_app) {
+		ORIGINAL_SET_TEXTURE_REGION.unwrap()(this, a1, a2, a3, a4, a5, a6, a7)
+	} else {
+		let args = Box::new((this, a1, a2, a3, a4, a5, a6, a7));
+		let thread_manager = CL_MAIN_INSTANCE.read().byte_offset(0x40).read();
+		let current = THREAD_MANAGER_CURRENT.unwrap()(thread_manager);
+		CALL_FROM_MAIN_THREAD.unwrap()(
+			current,
+			set_texture_region_main as *const _,
+			transmute(args.as_ref()),
+		);
+		1
+	}
+}
+
+unsafe extern "C" fn set_texture_region_main(args: *const c_void) {
+	let args: &(*const c_void, i32, i32, i32, i32, i32, i32, *const c_void) = transmute(args);
+	let (this, a1, a2, a3, a4, a5, a6, a7) = *args;
+	let cl_app = CL_APP_INSTANCE.unwrap()();
+	if CL_APP_IS_MAIN_THREAD.unwrap()(cl_app) {
+		ORIGINAL_SET_TEXTURE_REGION.unwrap()(this, a1, a2, a3, a4, a5, a6, a7);
+	} else {
+		panic!("Not main thread!");
 	}
 }
 
@@ -252,7 +353,7 @@ pub unsafe fn init() {
 	hook::hook_symbol("admShutdown", adachi as *const ());
 	hook::hook_symbol("admGetString", adm_version as *const ());
 	hook::hook_symbol("admGetNumDevices", adachi as *const ());
-	hook::hook_symbol("admInitDevicei", adm_device as *const ());
+	hook::hook_symbol("admInitDevicei", adachi as *const ());
 	hook::hook_symbol("admChooseModeConfigi", adm_config as *const ());
 	hook::hook_symbol("admModeConfigi", adachi as *const ());
 	hook::hook_symbol("admChooseFBConfigi", adm_fb_config as *const ());
@@ -266,14 +367,41 @@ pub unsafe fn init() {
 	hook::hook_symbol("admGetDeviceAttribi", adachi as *const ());
 	hook::hook_symbol("admSwapBuffers", adm_swap_buffers as *const ());
 	hook::hook_symbol("admSetMonitorGamma", adachi as *const ());
-	ORIGINAL_DEL_SPRITE_MANAGER = Some(transmute(hook::hook_symbol(
-		"_ZN15clSpriteManagerD1Ev",
-		del_sprite_manager as *const (),
-	)));
+
 	CL_APP_INSTANCE = Some(transmute(hook::get_symbol(
 		"_ZN11clAppSystem11getInstanceEv",
 	)));
 	CL_APP_IS_MAIN_THREAD = Some(transmute(hook::get_symbol(
 		"_ZN11clAppSystem12isMainThreadEv",
+	)));
+	CL_MAIN_INSTANCE = transmute(hook::get_symbol(
+		"_ZN11teSingletonI10teSequenceI6clMainEE11sm_instanceE",
+	));
+	THREAD_MANAGER_CURRENT = Some(transmute(hook::get_symbol(
+		"_ZN17clNPThreadManager7currentEv",
+	)));
+	CALL_FROM_MAIN_THREAD = transmute(hook::get_symbol(
+		"_ZN10clNPThread26callFunctionFromMainThreadEPFvPvES0_",
+	));
+
+	ORIGINAL_DEL_SPRITE_MANAGER = Some(transmute(hook::hook_symbol(
+		"_ZN15clSpriteManagerD1Ev",
+		del_sprite_manager as *const (),
+	)));
+	ORIGINAL_SAVE_IMAGE = Some(transmute(hook::hook_symbol(
+		"_ZN14clRenderBuffer9saveImageEPKc",
+		save_image as *const (),
+	)));
+	ORIGINAL_CREATE_TEXTURE_HANDLE = Some(transmute(hook::hook_symbol(
+		"_ZN24clAlchemyTextureAccessor19createTextureHandleEii",
+		create_texture_handle as *const (),
+	)));
+	ORIGINAL_SET_TEXTURE = Some(transmute(hook::hook_symbol(
+		"_ZN3Gap3Gfx19igAGLEVisualContext10setTextureEii",
+		set_texture as *const (),
+	)));
+	ORIGINAL_SET_TEXTURE_REGION = Some(transmute(hook::hook_symbol(
+		"_ZN3Gap3Gfx19igAGLEVisualContext16setTextureRegionEiiiiiiPNS0_7igImageE",
+		set_texture_region as *const (),
 	)));
 }
