@@ -1,0 +1,91 @@
+name: Windows LINE plugin test build
+
+on:
+  push:
+    paths:
+      - 'line-plugin/**'
+      - 'dist/**'
+      - '.github/workflows/windows-test.yml'
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    # 24.04's i686 mingw uses DWARF exceptions, which Rust's i686-pc-windows-gnu needs.
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: line-plugin
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install toolchain
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y gcc-mingw-w64-i686
+        i686-w64-mingw32-gcc -v 2>&1 | tail -3
+        rustup target add i686-pc-windows-gnu
+        rustup component add clippy
+
+    - name: Build
+      run: |
+        cargo build --release
+        cargo build --release --features misalign-test --target-dir target-misalign
+        cargo clippy --release -- -D warnings
+
+    - name: Check DLLs
+      run: |
+        set -euo pipefail
+        check() {
+          dll="$1"
+          echo "== $dll"
+          exports=$(i686-w64-mingw32-objdump -p "$dll" | sed -n '/\[Ordinal\/Name Pointer\] Table/,/^$/p')
+          for name in OnInitialize OnPreExecute OnDlOpen OnDlSym; do
+            echo "$exports" | grep -qw "$name" || { echo "missing export $name"; exit 1; }
+          done
+          imports=$(i686-w64-mingw32-objdump -p "$dll" | sed -n 's/^\s*DLL Name: //p')
+          echo "$imports"
+          echo "$imports" | grep -viE '^(kernel32|msvcrt|ntdll|bcryptprimitives|userenv|ws2_32|advapi32|api-ms-win-[a-z0-9-]+)\.dll$' \
+            && { echo "unexpected import (needs a runtime DLL the user won't have)"; exit 1; } || true
+        }
+        check target/i686-pc-windows-gnu/release/wal_line.dll
+        check target-misalign/i686-pc-windows-gnu/release/wal_line.dll
+
+        shim() {
+          i686-w64-mingw32-objdump -d "$(find "$1" -name libwal_align.a | head -1)" \
+            | sed -n '/<_wal_call1>:/,/ret/p'
+        }
+        shim target
+        shim target | grep -q 'and    $0xfffffff0,%esp'
+        shim target | grep -q 'sub    $0xc,%esp'
+        shim target-misalign | grep -q 'sub    $0x4,%esp'
+
+    - name: Lint start.bat
+      run: |
+        set -euo pipefail
+        bat=dist/start.bat
+        fail() { echo "start.bat: $1"; exit 1; }
+        file "$bat" | grep -q CRLF || fail "must use CRLF line endings"
+        # The game folder can contain ")", so these must never be expanded inside ( ) blocks.
+        code=$(grep -vi '^rem' "$bat")
+        if echo "$code" | grep -n '%CD%'; then fail "don't use %CD%"; fi
+        if [ "$(echo "$code" | grep -c '%~dp0')" -ne 1 ] || ! echo "$code" | grep -q '^cd /d "%~dp0"'; then
+          fail '%~dp0 may only appear in the initial cd /d "%~dp0"'
+        fi
+        if echo "$code" | grep -nE '\([[:space:]]*$'; then fail "no multi-line ( ) blocks"; fi
+
+    - name: Package
+      run: |
+        mkdir -p out
+        cp target/i686-pc-windows-gnu/release/wal_line.dll out/
+        cp target-misalign/i686-pc-windows-gnu/release/wal_line.dll out/wal_line_misalign.dll
+        cp dist/start.bat README.md out/
+        cp ../dist/config.toml out/
+        cp -r ../dist/tmp ../dist/data out/
+
+    - uses: actions/upload-artifact@v4
+      with:
+        name: wal_line-windows-test
+        path: line-plugin/out
