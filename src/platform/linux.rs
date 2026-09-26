@@ -54,6 +54,10 @@ pub unsafe fn library_symbol(module: *mut c_void, symbol: &str) -> *mut c_void {
 	dlsym(module, symbol.as_ptr())
 }
 
+pub fn log(msg: &str) {
+	println!("{msg}");
+}
+
 pub fn exit(code: i32) -> ! {
 	std::process::exit(code)
 }

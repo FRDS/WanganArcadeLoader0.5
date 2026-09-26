@@ -2,34 +2,36 @@ TEST = ["F1"]
 SERVICE = ["F2"]
 CARD_INSERT = ["C", "SDL_START"]
 
-GEAR_NEXT = ["SDL_RSHOULDER"]
-GEAR_PREVIOUS = ["SDL_LSHOULDER"]
-GEAR_NEUTRAL = []
-GEAR_FIRST = []
-GEAR_SECOND = []
-GEAR_THIRD = []
-GEAR_FOURTH = []
-GEAR_FIFTH = []
-GEAR_SIXTH = []
+GEAR_NEXT = ["E", "SDL_RSHOULDER"]
+GEAR_PREVIOUS = ["Q", "SDL_LSHOULDER"]
+GEAR_NEUTRAL = ["NUM0"]
+GEAR_FIRST = ["NUM1"]
+GEAR_SECOND = ["NUM2"]
+GEAR_THIRD = ["NUM3"]
+GEAR_FOURTH = ["NUM4"]
+GEAR_FIFTH = ["NUM5"]
+GEAR_SIXTH = ["NUM6"]
 # For debug menu
 GEAR_UP = ["UPARROW"]
 GEAR_LEFT = ["LEFTARROW"]
 GEAR_DOWN = ["DOWNARROW"]
 GEAR_RIGHT = ["RIGHTARROW"]
 
-PERSPECTIVE = ["SDL_Y"]
-INTRUDE = ["SDL_X"]
-GAS = ["SDL_RTRIGGER_DOWN", "SDL_A"]
-BRAKE = ["SDL_LTRIGGER_DOWN", "SDL_B"]
-WHEEL_LEFT = ["SDL_LSTICK_LEFT"]
-WHEEL_RIGHT = ["SDL_LSTICK_RIGHT"]
+PERSPECTIVE = ["V", "SDL_Y"]
+INTRUDE = ["SPACE", "SDL_X"]
+GAS = ["W", "SDL_RTRIGGER_DOWN", "SDL_A"]
+BRAKE = ["S", "SDL_LTRIGGER_DOWN", "SDL_B"]
+WHEEL_LEFT = ["A", "SDL_LSTICK_LEFT"]
+WHEEL_RIGHT = ["D", "SDL_LSTICK_RIGHT"]
 
+# Keyboard:
 # F1 through F12
 # NUM0 through NUM9
 # QWERTYUIOPASDFGHJKLZXCVBNM
 # UPARROW LEFTARROW DOWNARROW RIGHTARROW
 # ENTER SPACE CONTROL SHIFT TAB ESCAPE
-# SCROLL_UP SCROLL_DOWN
+#
+# Pads SDL knows (Xbox, PlayStation, Switch Pro, ...):
 # SDL_A SDL_B SDL_X SDL_Y
 # SDL_BACK SDL_GUIDE SDL_START
 # SDL_LSHOULDER SDL_LTRIGGER_UP SDL_LTRIGGER_DOWN SDL_RSHOULDER SDL_RTRIGGER_UP SDL_RTRIGGER_DOWN
@@ -37,3 +39,23 @@ WHEEL_RIGHT = ["SDL_LSTICK_RIGHT"]
 # SDL_MISC SDL_PADDLE1 SDL_PADDLE2 SDL_PADDLE3 SDL_PADDLE4 SDL_TOUCHPAD
 # SDL_LSTICK_UP SDL_LSTICK_LEFT SDL_LSTICK_DOWN SDL_LSTICK_RIGHT SDL_LSTICK_PRESS
 # SDL_RSTICK_UP SDL_RSTICK_LEFT SDL_RSTICK_DOWN SDL_RSTICK_RIGHT SDL_RSTICK_PRESS
+#
+# Any joystick, including steering wheels and pedals:
+# JOY_BUTTON<n>                 button n
+# JOY_AXIS<n>+  JOY_AXIS<n>-    one half of axis n (steering right / left)
+# JOY_AXIS<n>_FULL              all of axis n, for a pedal resting at -1
+# JOY_AXIS<n>_FULL_INV          all of axis n, for a pedal resting at +1
+# JOY_HAT<n>_UP _DOWN _LEFT _RIGHT
+# Put a device number after JOY to use only that device, e.g. JOY1_AXIS2_FULL_INV.
+# Without one, every device counts.
+#
+# To find your wheel's numbers, set input_log = true in config.toml, start the
+# game, turn the wheel and press each pedal and button, then read wal_3dxp.log
+# (Windows) or the terminal (Linux). It lists each device and suggests names.
+# A typical wheel ends up like this (your axis numbers may differ):
+# WHEEL_LEFT = ["JOY0_AXIS0-"]
+# WHEEL_RIGHT = ["JOY0_AXIS0+"]
+# GAS = ["JOY0_AXIS2_FULL_INV"]
+# BRAKE = ["JOY0_AXIS3_FULL_INV"]
+# GEAR_NEXT = ["JOY0_BUTTON4"]
+# GEAR_PREVIOUS = ["JOY0_BUTTON5"]

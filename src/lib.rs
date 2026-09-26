@@ -43,6 +43,9 @@ pub struct Config {
 	/// Frames per second cap, 0 for none. Linux usually caps with MangoHUD
 	/// (see start.sh), so the default is 60 only on Windows.
 	fps_limit: u32,
+
+	/// Log controllers and every input to find binding names (see keyconfig.toml).
+	input_log: bool,
 }
 
 impl Default for Config {
@@ -66,6 +69,7 @@ const fn default_config() -> Config {
 		height: 480,
 		file_redirect: None,
 		fps_limit: if cfg!(windows) { 60 } else { 0 },
+		input_log: false,
 	}
 }
 
@@ -329,6 +333,10 @@ const fn default_gameversion() -> GameVersion {
 		revision: 0,
 	}
 }
+
+// Test builds have no constructor calling init; keep it (and what it uses) "used".
+#[cfg(test)]
+const _: unsafe fn() = init;
 
 /// Runs once before the game starts: from a constructor on Linux, and from
 /// LINE's OnPreExecute("main") on Windows.

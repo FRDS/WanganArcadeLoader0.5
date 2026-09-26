@@ -9,3 +9,7 @@ deadzone = 0.01
 
 width = 640
 height = 480
+
+# Log controllers and every key, button and axis to find names for
+# keyconfig.toml (wal_3dxp.log on Windows, the terminal on Linux).
+input_log = false

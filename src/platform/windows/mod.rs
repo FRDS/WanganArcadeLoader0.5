@@ -151,6 +151,11 @@ pub unsafe fn library_symbol(module: *mut c_void, symbol: &str) -> *mut c_void {
 	GetProcAddress(module, symbol.as_ptr())
 }
 
+/// Logs to stdout and wal_3dxp.log.
+pub fn log(msg: &str) {
+	log::write(msg);
+}
+
 /// Exits through msys so LINE's stdio is flushed.
 pub fn exit(code: i32) -> ! {
 	unsafe {

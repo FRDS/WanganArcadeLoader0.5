@@ -39,11 +39,44 @@ The loader writes its messages to `wal_3dxp.log`; the game and LINE write to
 `line_console.log`. If something goes wrong, send both, plus
 `line.exe.stackdump` if it exists.
 
+## Controls
+
+Defaults from `keyconfig.toml`:
+
+| Action | Keyboard | Pad (Xbox / PlayStation) |
+|---|---|---|
+| Test / Service | F1 / F2 | |
+| Insert card (`card.bin`) | C | Start |
+| Gas / Brake | W / S | Right / left trigger, or A / B |
+| Steer | A / D | Left stick |
+| Gear up / down | E / Q | Right / left bumper |
+| Gear N, 1–6 | 0–6 | |
+| View / Intrude | V / Space | Y / X |
+| Debug menu | Arrow keys | |
+
+Pads work if SDL recognises them (`gamecontrollerdb.txt` adds more). Keys
+only register while the game window has focus.
+
+### Steering wheels and pedals
+
+Wheels usually aren't in SDL's pad database, so they use raw joystick
+bindings (`JOY_AXIS…`, `JOY_BUTTON…`; the list is at the bottom of
+`keyconfig.toml`):
+
+1. Set `input_log = true` in `config.toml` and start the game.
+2. Turn the wheel both ways, press each pedal and the buttons you want.
+3. `wal_3dxp.log` lists your devices (`JOY0 = "..."`) and each input with the
+   name to use, for example
+   `JOY0_AXIS2 = -0.98 (a pedal resting at +1? use JOY0_AXIS2_FULL_INV)`.
+4. Put those names in `keyconfig.toml`, for example
+   `GAS = ["JOY0_AXIS2_FULL_INV"]`, then set `input_log` back to `false`.
+
 ## Configuration
 
 `config.toml` works as on Linux. Missing keys use their defaults. Differences
 on Windows:
 
+- `input_log` (default `false`): logs controllers and inputs; see above.
 - `fps_limit` (default `60`): Linux caps the frame rate with MangoHUD, Windows
   uses this. `0` turns the cap off.
 - `fullscreen = true` is borderless at your monitor's resolution; the game's

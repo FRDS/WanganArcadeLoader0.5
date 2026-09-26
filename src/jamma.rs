@@ -26,7 +26,9 @@ unsafe extern "C" fn handle_inputs(data: *mut u32) {
 		return;
 	};
 	if SDL_STATE.is_none() {
-		SDL_STATE = Some(poll::PollState::new(adm::GLFW_WINDOW, CONFIG.deadzone).unwrap());
+		SDL_STATE = Some(
+			poll::PollState::new(adm::GLFW_WINDOW, CONFIG.deadzone, CONFIG.input_log).unwrap(),
+		);
 	}
 	let sdl = SDL_STATE.as_mut().unwrap();
 	let keyconfig = KEYCONFIG.as_ref().unwrap();
