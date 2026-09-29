@@ -14,9 +14,8 @@ pub mod opengl;
 pub mod platform;
 pub mod poll;
 pub mod res;
+pub mod shader;
 
-// Only the Linux interposers use redirects so far.
-#[cfg_attr(windows, allow(dead_code))]
 #[derive(serde::Deserialize)]
 pub struct FileRedirect {
 	from: String,
@@ -46,6 +45,22 @@ pub struct Config {
 
 	/// Log controllers and every input to find binding names (see keyconfig.toml).
 	input_log: bool,
+
+	/// Log the game's Cg calls: the shader profile chosen for this GPU, and the
+	/// compiler listing for any program that fails. Windows only — the engine's
+	/// own shader reporting is compiled out of the release build it ships as.
+	#[cfg_attr(unix, allow(dead_code))]
+	cg_log: bool,
+
+	/// Log every file the game opens. Windows only; failed opens are logged
+	/// either way, since a path LINE can't reach fails silently otherwise.
+	#[cfg_attr(unix, allow(dead_code))]
+	file_log: bool,
+
+	/// Ask for an OpenGL debug context and log the driver's own messages. The
+	/// world is drawn with fixed-function and multitexture state, not Cg, so
+	/// this is the only account of why it might come out wrong.
+	gl_debug: bool,
 }
 
 impl Default for Config {
@@ -70,6 +85,9 @@ const fn default_config() -> Config {
 		file_redirect: None,
 		fps_limit: if cfg!(windows) { 60 } else { 0 },
 		input_log: false,
+		cg_log: false,
+		file_log: false,
+		gl_debug: false,
 	}
 }
 
@@ -412,6 +430,8 @@ pub(crate) unsafe fn init() {
 	KEYCONFIG = Some(keyconfig);
 
 	platform::init();
+	// Before the engine reads them, so the fixed files are the ones it loads.
+	shader::ensure_portable();
 
 	hook::hook_symbol("hasp_cleanup", undachi as *const ());
 	hook::hook_symbol("hasp_decrypt", undachi as *const ());

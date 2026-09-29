@@ -4,7 +4,9 @@
 //! symbol lookup and hooking (MinHook). libc calls go to LINE's stubs, which
 //! we hook by address where the game needs different behaviour.
 
+mod cg;
 mod crash;
+mod files;
 mod line;
 pub mod log;
 mod system;
@@ -15,6 +17,7 @@ use std::ptr::null_mut;
 use std::sync::atomic::{AtomicPtr, Ordering};
 
 pub const OPENAL_LIBRARY: &str = "soft_oal.dll";
+pub const CG_LIBRARY: &str = "cg.dll";
 
 #[link(name = "winmm")]
 extern "system" {
@@ -80,6 +83,9 @@ pub unsafe extern "C" fn OnDlOpen(lib_name: *const c_char, result: *mut *mut c_v
 	crate::wal_log!("OnDlOpen {name} -> {dll}");
 	slot.store(module, Ordering::Relaxed);
 	*result = module;
+	if CONFIG.cg_log {
+		cg::prime(module);
+	}
 	true
 }
 
@@ -96,7 +102,18 @@ pub unsafe extern "C" fn OnDlSym(
 		return false;
 	}
 	// Cg's Windows API is cdecl, like the game's Linux calls.
-	*result = GetProcAddress(handle, symbol);
+	let real = GetProcAddress(handle, symbol);
+	let name = CStr::from_ptr(symbol).to_string_lossy();
+	if real.is_null() {
+		// LINE takes `true` as "handled", so the game would get a null pointer
+		// and no warning. Say so instead of failing silently later.
+		crate::wal_log!("OnDlSym: {name} is not exported by the Windows Cg DLLs");
+	}
+	*result = if CONFIG.cg_log {
+		cg::wrapper(&name, real).unwrap_or(real)
+	} else {
+		real
+	};
 	true
 }
 
@@ -130,7 +147,7 @@ pub unsafe fn write_memory(address: *mut (), data: &[u8]) {
 	line::patch_bytes(address as *mut u8, data);
 }
 
-unsafe fn try_load_library(name: &str) -> Option<*mut c_void> {
+pub unsafe fn try_load_library(name: &str) -> Option<*mut c_void> {
 	let name_c = CString::new(name).unwrap();
 	let module = LoadLibraryA(name_c.as_ptr());
 	if module.is_null() {
@@ -183,6 +200,8 @@ pub unsafe fn init() {
 	if line::hook(system_stub, system::system as *const c_void).is_none() {
 		crate::wal_log!("failed to hook system() at {system_stub:p}");
 	}
+
+	files::init();
 
 	// Windows can't set interface addresses; the game only needs the call to succeed.
 	hook::hook_symbol("_ZN5clNet19setInterfaceAddressEv", adachi as *const ());

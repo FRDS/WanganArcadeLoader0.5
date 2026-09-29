@@ -13,3 +13,25 @@ height = 480
 # Log controllers and every key, button and axis to find names for
 # keyconfig.toml (wal_3dxp.log on Windows, the terminal on Linux).
 input_log = false
+
+# Log the game's Cg calls: which shader profile it asks for, which one Cg picks
+# for this GPU, and the compiler listing for any program that fails. Windows
+# only, and only useful when shaders misbehave (see dist-windows/README.md).
+cg_log = false
+
+# Log every file the game opens (Windows only). Failed opens are always logged.
+file_log = false
+
+# Ask the driver for an OpenGL debug context and log what it complains about.
+# The world is drawn with fixed-function and multitexture state rather than
+# shaders, so if it renders black or untextured this is the only thing that
+# will say why. Costs a little performance; leave it off normally.
+gl_debug = false
+
+# Map a path the game asks for onto a real file. Needed on Windows when the
+# game uses an absolute Linux path: LINE passes those through unchanged and
+# confines the game to its own folder, so they fail. Add entries at the end of
+# this file -- everything after a [[table]] header belongs to that table.
+# [[file_redirect]]
+# from = "/shaderList.ini"
+# to = "data/graphic/shaderList.ini"

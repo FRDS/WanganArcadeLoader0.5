@@ -28,7 +28,10 @@ for %%S in ("data\shader\*.cg") do call :compile_shader "%%~nS"
 type nul > "data\shader\.recompiled"
 goto shaders_done
 :shaders_skipped
-echo [start] cgc not found, shaders not recompiled. This only matters on non-NVIDIA GPUs.
+echo [start] WARNING: cgc not found, so the shaders were NOT recompiled.
+echo [start] The game ships them built for NVIDIA. On any other GPU every shader
+echo [start] is rejected and the world renders BLACK while the HUD looks fine.
+echo [start] Install the NVIDIA Cg Toolkit 3.1 so cgc is on PATH, then run again.
 :shaders_done
 
 set "LC_ALL=C"

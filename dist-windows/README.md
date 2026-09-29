@@ -77,6 +77,13 @@ bindings (`JOY_AXIS…`, `JOY_BUTTON…`; the list is at the bottom of
 on Windows:
 
 - `input_log` (default `false`): logs controllers and inputs; see above.
+- `cg_log` (default `false`): logs the game's Cg shader calls — which profile
+  the engine asks for, which one Cg picks for your GPU, and the compiler
+  listing for any shader that fails. Turn this on if the world renders black or
+  untextured while the HUD looks right. The engine's own shader reporting in
+  `alchemy.ini` (`printCompiledShaders`, `defaultReportLevel`) is marked "Debug
+  only" and is compiled out of the release build the game ships as, so it
+  cannot tell you any of this — the loader has to.
 - `fps_limit` (default `60`): Linux caps the frame rate with MangoHUD, Windows
   uses this. `0` turns the cap off.
 - `fullscreen = true` is borderless at your monitor's resolution; the game's

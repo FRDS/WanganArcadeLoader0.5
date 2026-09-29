@@ -12,6 +12,15 @@ unsafe fn ctor_init() {
 }
 
 pub const OPENAL_LIBRARY: &str = "libopenal.so";
+pub const CG_LIBRARY: &str = "libCg.so";
+
+/// Opens a shared library, or None if it isn't there. Unlike `load_library`,
+/// a missing one is not fatal.
+pub unsafe fn try_load_library(name: &str) -> Option<*mut c_void> {
+	let name = CString::new(name).ok()?;
+	let module = dlopen(name.as_ptr(), RTLD_LAZY);
+	(!module.is_null()).then_some(module)
+}
 
 pub unsafe fn get_symbol(symbol: &str) -> *mut () {
 	let symbol = CString::new(symbol).unwrap();
