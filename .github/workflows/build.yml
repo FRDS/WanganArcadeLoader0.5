@@ -274,26 +274,33 @@ jobs:
           if ($m -ne 0x014c) { throw "$f is not 32-bit x86" }
         }
 
-        # 2. Cygwin-linked, not mingw. Needs no toolchain, so this one also
-        #    runs on a cache hit; the real import tables are read below.
+        # 2. Cygwin-linked. Needs no toolchain, so this one runs on a cache
+        #    hit too; the real import tables are read below.
         $ascii = [Text.Encoding]::ASCII.GetString([IO.File]::ReadAllBytes((Resolve-Path 'dist/line.exe')))
         if ($ascii -notmatch 'msys-2\.0\.dll') { throw 'line.exe does not reference msys-2.0.dll: not a Cygwin build' }
-        foreach ($bad in @('msys-gcc_s-seh-1\.dll','libstdc\+\+-6\.dll','libgcc_s_[a-z0-9]+-1\.dll','libwinpthread-1\.dll')) {
-          if ($ascii -match $bad) { throw "line.exe references a runtime we do not ship: $bad" }
-        }
+        if ($ascii -match 'msys-gcc_s-seh-1\.dll') { throw 'line.exe references the 64-bit MSYS2 runtime' }
 
-        # 3. The actual import tables, when a toolchain is present.
+        # 3. The actual import tables, when a toolchain is present. As in the
+        #    build step, CHERE_INVOKING is what stops `-l` cd'ing to $HOME --
+        #    without it every dist/* glob below silently matches nothing.
         $bash = 'C:\msys32\usr\bin\bash.exe'
         if (Test-Path $bash) {
-          & $bash -lc 'for f in dist/*.exe dist/*.dll; do echo "== $f"; objdump -p "$f" | sed -n "s/^\s*DLL Name: //p" | sort -u; done | tee imports.txt'
+          $env:CHERE_INVOKING = 'yes'
+          $env:MSYSTEM = 'MSYS'
+          # pipefail matters: with `| tee` the status would be tee's, so a
+          # failing objdump would report success.
+          & $bash -lc 'set -eo pipefail; for f in dist/*.exe dist/*.dll; do objdump -p "$f" | sed -n "s/^\s*DLL Name: //p"; done | sort -u > imports.txt'
           if ($LASTEXITCODE -ne 0) { throw 'objdump failed' }
-          $imports = Get-Content imports.txt | Where-Object { $_ -notmatch '^==' }
-          if ($imports -notcontains 'msys-2.0.dll') { throw 'no msys-2.0.dll import' }
+          $imports = @(Get-Content imports.txt)
+          Write-Host ('imports: ' + ($imports -join ', '))
+          if ($imports -notcontains 'msys-2.0.dll') { throw 'no msys-2.0.dll import: not a Cygwin build' }
           foreach ($i in $imports) {
+            if ($i -match '^(libstdc\+\+-6|libgcc_s_|libwinpthread-1)') { throw "mingw runtime import: $i" }
             if ($i -match '^msys-' -and $i -notmatch '^msys-(2\.0|gcc_s-1|stdc\+\+-6)\.dll$') { throw "unshipped msys import: $i" }
           }
           Remove-Item imports.txt
           & $bash -lc 'pacman -Q > dist/3rd-party-softwares/msys2-packages.txt'
+          if ($LASTEXITCODE -ne 0) { throw 'pacman -Q failed' }
         } else {
           Write-Host 'cache hit: C:\msys32 absent, import-table check skipped'
         }
