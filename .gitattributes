@@ -1,0 +1,4 @@
+# These run on Linux (dist/start.sh) and in CI and WSL (tests/mockline/run.sh).
+# Without this a Windows clone with core.autocrlf=true gets CRLF and the
+# shebang fails with "required file not found".
+*.sh text eol=lf
