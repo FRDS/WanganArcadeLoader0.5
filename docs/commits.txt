@@ -1,0 +1,8 @@
+64828713a018d85f01149560283785f9117c73d2 2026-09-26 Controller input: wheels and pedals, input log, keyboard defaults
+c52af6769aa75a2fd59b576d21d2dea3a0414c2a 2026-09-25 Build as a LINE plugin on Windows
+1da366d7f3ca5f7f5186f3d572dc4bf7f52fa27c 2026-09-25 Fix build on current Rust, config defaults and fullscreen
+7316c57052a493c110acc23da7128af59435e56e 2026-09-25 Merge upstream/master into claude/nifty-ptolemy-bfx2bw
+44deea4a1bb9ab3ec49a4cd1ca845c5e91ac2310 2026-09-25 line-plugin: log crashes and keep LINE's console output
+f706d191dd6e624b0c6b209051eb1ec60c8d1b89 2026-09-25 Add Rust LINE plugin go/no-go test for Windows
+cbf61dd2b4c0f8a27a998be0683ae254d5a62f31 2024-05-03 Build
+7f3306e4e26735570b1a2c26ddfcce0f53c20df7 2024-05-03 Test Force Fullscreen
