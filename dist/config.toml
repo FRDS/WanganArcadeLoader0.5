@@ -10,28 +10,26 @@ deadzone = 0.01
 width = 640
 height = 480
 
-# Log controllers and every key, button and axis to find names for
-# keyconfig.toml (wal_3dxp.log on Windows, the terminal on Linux).
+# Diagnostics. All off by default; each writes to wal_3dxp.log on Windows and
+# the terminal on Linux. The game's own reporting is compiled out of the
+# release build it ships as, so these are the only way to see inside it.
+#
+#   input_log  every controller and input, with the name to use in
+#              keyconfig.toml -- this is how you find a wheel's axis numbers
+#   cg_log     which shader profile Cg picks for your GPU, and the compiler
+#              listing for any shader that fails
+#   file_log   every file the game opens (failed opens are logged regardless)
+#   gl_debug   ask the driver for a debug context and log what it complains
+#              about; use this when something renders wrong but nothing errors
 input_log = false
-
-# Log the game's Cg calls: which shader profile it asks for, which one Cg picks
-# for this GPU, and the compiler listing for any program that fails. Windows
-# only, and only useful when shaders misbehave (see dist-windows/README.md).
 cg_log = false
-
-# Log every file the game opens (Windows only). Failed opens are always logged.
 file_log = false
-
-# Ask the driver for an OpenGL debug context and log what it complains about.
-# The world is drawn with fixed-function and multitexture state rather than
-# shaders, so if it renders black or untextured this is the only thing that
-# will say why. Costs a little performance; leave it off normally.
 gl_debug = false
 
 # Map a path the game asks for onto a real file. Needed on Windows when the
 # game uses an absolute Linux path: LINE passes those through unchanged and
-# confines the game to its own folder, so they fail. Add entries at the end of
-# this file -- everything after a [[table]] header belongs to that table.
+# confines the game to its own folder, so they fail. Keep entries at the end --
+# in TOML everything after a [[table]] header belongs to that table.
 # [[file_redirect]]
-# from = "/shaderList.ini"
-# to = "data/graphic/shaderList.ini"
+# from = "/some/path"
+# to = "data/replacement"

@@ -22,19 +22,34 @@ and OpenGL.
 Fork of `vixen256/WanganArcadeLoader0.5`; the Windows port lives on branch
 `claude/nifty-ptolemy-bfx2bw`.
 
-**Read [docs/HANDOFF.md](docs/HANDOFF.md) before starting work.** It is the
-full record of the Windows port: what is proven on hardware versus only in a
-container, the phase plan (P0–P7), decisions already taken and not worth
-relitigating, and the research for the unstarted phases (custom BGM, the
-Gemballa unlock byte offsets, networking). This file covers only how the code
-is put together.
+**Read [docs/ROADMAP.md](docs/ROADMAP.md) before starting work.** It has the
+phase status (P0–P7), what is proven on hardware versus only in a container,
+decisions already taken and not worth relitigating, and the research for the
+unstarted phases — custom BGM, the Gemballa unlock byte offsets, networking.
+That research exists nowhere else. This file covers only how the code is put
+together.
 
 ## Build and test
 
 Nothing builds on Windows natively. Both targets are cross-compiled from
 **Ubuntu 24.04** — 24.04 specifically, because its i686 mingw uses DWARF
-exceptions, which Rust's `i686-pc-windows-gnu` requires. See docs/HANDOFF.md
-§3 for the full `apt` list.
+exceptions, which Rust's `i686-pc-windows-gnu` requires; 22.04 will not link.
+WSL is fine (`wsl --install -d Ubuntu-24.04`).
+
+```sh
+sudo dpkg --add-architecture i386 && sudo apt-get update
+sudo apt-get install -y build-essential gcc-multilib g++-multilib cmake \
+  gcc-mingw-w64-i686 g++-mingw-w64-i686
+sudo apt-get install -y --no-install-recommends \
+  libx11-dev:i386 libxcb1-dev:i386 libxrandr-dev:i386 libxinerama-dev:i386 \
+  libxcursor-dev:i386 libxi-dev:i386
+sudo apt-get install -y --no-install-recommends wine32:i386 wine   # for tests
+rustup target add i586-unknown-linux-gnu i686-pc-windows-gnu
+rustup component add clippy
+```
+
+`cmake` is not optional: `sdl2` is built `bundled` + `static-link`, so the
+first build compiles SDL2 from source and takes a few minutes.
 
 ```sh
 # Linux target
@@ -157,6 +172,9 @@ numbers.
   and friends, and rescales the minimap viewport and perspective FOV.
 - `card.rs` — emulates the magnetic card printer against `card.bin`.
 - `al.rs` — redirects 69 OpenAL entry points to the system OpenAL.
+- `shader.rs` — recompiles `data/shader/*.cg` to portable ARB at startup when
+  it finds NVIDIA-only programs, using the Cg compiler inside
+  `cg.dll`/`libCg.so`. Runs before the engine reads them. See the gotcha below.
 - `vendor/retour/` — the upstream `retour` fork with one change: its `win64`
   function-pointer impls are now `#[cfg(target_arch = "x86_64")]`, because
   current rustc rejects that ABI on 32-bit. Patched in via `[patch]` in
@@ -183,12 +201,24 @@ numbers.
   hooks LINE's `open`/`open64`/`fopen` stubs). Note LINE already rewrites
   `/tmp/...` to `./tmp/...` itself, so don't add that rewrite again — and
   `fopen64` currently refuses to hook, so a little file activity is invisible.
-- **Diagnostic logging is opt-in per subsystem**, because the game is a black
-  box with its own reporting compiled out: `cg_log` (shader profile chosen and
-  Cg compiler listings), `file_log` (every file opened; failures are always
-  logged), `gl_debug` (an OpenGL debug context, relaying the driver's own
-  messages). Anything logged per-frame or per-draw **must be deduplicated** —
-  an early `gl_debug` build without it produced a 70 MB log in one run.
+- **The dump's shaders are NVIDIA-only.** `data/shader/*.fp`/`*.vp` ship
+  compiled for `vp40`/`fp40` with `OPTION NV_vertex_program3` and `BB1:`
+  labels. Every other driver rejects all of them — `GL_INVALID_OPERATION in
+  ProgramStringARB`, "syntax error near 'BB1'" — and because draws with no
+  valid program bound fail too, **the 3D world renders black while the HUD
+  looks perfect and the game reports nothing.** `shader.rs` fixes this
+  automatically now; the symptom is worth recognising because nothing in the
+  game's own output points at it.
+- **The game's own diagnostics do not exist.** `alchemy.ini`'s
+  `printCompiledShaders` and `defaultReportLevel` are marked "Debug only" and
+  are compiled out of the `Static/Release` build it ships as, so turning them
+  on achieves nothing. The loader has to supply the instrumentation, and it is
+  opt-in per subsystem: `cg_log` (shader profile chosen, Cg listings on
+  failure), `file_log` (every file opened; failures always logged),
+  `gl_debug` (an OpenGL debug context relaying the driver's own messages —
+  this is what found the shader bug). Anything logged per-frame or per-draw
+  **must be deduplicated**: an early `gl_debug` build without it produced a
+  70 MB log in a single run.
 - **ARM is not a target.** The game is 32-bit x86 and this code rewrites its
   machine code; run the x86 build under emulation instead.
 
@@ -205,6 +235,12 @@ Logs to collect afterwards: `wal_3dxp.log` (the loader), `line_console.log`
 
 ## Repository state
 
-CI (`.github/workflows/build.yml`) has never run — nothing has been pushed.
-Pushing failed all of the previous session (see docs/HANDOFF.md §8); from a
-local session with the user's own credentials it should work.
+The branch is `claude/nifty-ptolemy-bfx2bw` on `FRDS/WanganArcadeLoader0.5`,
+forked from `vixen256/WanganArcadeLoader0.5` (added as `upstream`). Note that
+`gh` resolves to `upstream` unless you pass
+`--repo FRDS/WanganArcadeLoader0.5`.
+
+CI (`.github/workflows/build.yml`) has two jobs: `build` (Linux i586, which
+also compiles openal-soft from source and so is slow) and `windows` (cross-
+build, DLL export and import checks, a `start.bat` lint, and both test suites
+under Wine).
