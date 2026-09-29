@@ -185,8 +185,13 @@ jobs:
         if (-not (Test-Path $7z)) { throw '7-Zip did not install' }
 
         Invoke-WebRequest "https://repo.msys2.org/distrib/i686/$env:MSYS2_TARBALL" -OutFile $env:MSYS2_TARBALL
-        # Printed so it can be pinned later; a mirror would then be provable.
-        Write-Host ('sha256 = ' + (Get-FileHash $env:MSYS2_TARBALL -Algorithm SHA256).Hash.ToLower())
+        # Recorded from run 36523054017, the first green build. It makes the
+        # download a supply-chain pin rather than a fetch, so a mirror can be
+        # substituted later with a provable match.
+        $want = '00ff768f704d61b9d6a69522ea81ea9b1a3fd3c8669f20f868ad18fc726c8d47'
+        $sha = (Get-FileHash $env:MSYS2_TARBALL -Algorithm SHA256).Hash.ToLower()
+        Write-Host "sha256 = $sha"
+        if ($sha -ne $want) { throw "tarball hash mismatch: got $sha, expected $want" }
 
         # Two steps, not upstream's `7z x -so | 7z x -si`: a native-to-native
         # pipe in PowerShell routes bytes through the object pipeline.
