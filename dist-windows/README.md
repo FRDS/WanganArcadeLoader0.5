@@ -15,13 +15,23 @@ From this package:
 - `data/config.lua` (replaces the game's own; back that up first)
 - `tmp/`
 
-From elsewhere, all **32-bit**:
+Also in the `dist-windows-bundle` download:
 
 - `line.exe`, `msys-2.0.dll`, `msys-gcc_s-1.dll`, `msys-stdc++-6.dll`, built
-  from [axylol/line](https://github.com/axylol/line) with 32-bit MSYS2
-  (`C:\msys32`). DLLs from 64-bit MSYS2 fail with error `0xc000007b`.
+  by our CI from [axylol/line](https://github.com/axylol/line) at the commit
+  recorded in `licenses/line/SOURCE.txt`.
+
+  If you took the plain `dist-windows` artifact instead, or built from source,
+  these four are not here — see "Building LINE yourself" below. They are all
+  **32-bit**, and if you substitute your own, all four must come from the
+  *same* 32-bit MSYS2 install: 64-bit ones fail with `0xc000007b`, and the
+  giveaway is `msys-gcc_s-seh-1.dll` in place of `msys-gcc_s-1.dll`.
+
+From elsewhere, both **32-bit**:
+
 - `cg.dll`, `cgGL.dll` from the NVIDIA Cg Toolkit 3.1, from its `bin` folder
-  (not `bin.x64`).
+  (not `bin.x64`). These are NVIDIA-proprietary and can't be redistributed,
+  so they stay a manual step.
 - `soft_oal.dll` from [OpenAL Soft](https://openal-soft.org), `bin\Win32`.
 
 ## Running
@@ -90,3 +100,33 @@ on Windows:
   `width` × `height` image is scaled to fit.
 - Networking stays off unless `local_ip` is set.
 - The `plugins/` folder isn't supported on Windows yet.
+
+## Building LINE yourself
+
+Only needed if you want to change LINE or check our build. LINE is a Cygwin
+program, so it can't be cross-compiled — it needs **32-bit** MSYS2 on Windows
+(`C:\msys32`; MSYS2 stopped shipping i686 installers in 2020, so use a
+`msys2-base-i686-*` archive). Clone
+[axylol/line](https://github.com/axylol/line), check out the commit named in
+`licenses/line/SOURCE.txt`, then from an MSYS shell:
+
+```sh
+pacman --noconfirm --needed -S base-devel msys2-devel cmake ninja wget
+rebaseall -p
+./scripts/ci.sh
+```
+
+That leaves `line.exe` and the three `msys-*.dll` files in `dist/`. Copy all
+four — mixing them with DLLs from another MSYS2 install is what produces
+`0xc000007b`.
+
+## Licences
+
+This loader and LINE are both GPL-3.0. `LICENSE.txt` is the loader's licence;
+`licenses/line/` holds LINE's, its third-party licence texts, the exact
+upstream commit we built, and the MSYS2 package list that built it. The
+complete corresponding source for the bundled `line.exe` is the `line-source`
+artifact of the CI run that produced the bundle, and is also on GitHub at the
+commit in `SOURCE.txt`.
+
+`cg.dll`, `cgGL.dll` and `soft_oal.dll` are not ours and are not included.

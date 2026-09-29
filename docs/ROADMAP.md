@@ -54,6 +54,37 @@ decision — the GLFW keyboard switch and the SDL 0.38 bump are untested there).
   machine code, so an ARM build could never load into it. On ARM you run the
   x86 build under emulation (Windows Prism, or Box64/Box32 on Android).
 
+## Windows runtime strategy
+
+Running the game on Windows takes more than our DLL, and the pieces differ in
+how far we can go:
+
+| Piece | Status |
+|---|---|
+| `wal_3dxp.dll` | cross-built from Ubuntu in ~15 s, imports only stock Windows DLLs |
+| `line.exe` + `msys-2.0.dll`, `msys-gcc_s-1.dll`, `msys-stdc++-6.dll` | built by the `line` CI job, bundled |
+| `soft_oal.dll` | external — but OpenAL Soft cross-compiles with mingw-w64, so this is easy and just not done yet |
+| `cg.dll`, `cgGL.dll` | external, permanently — NVIDIA-proprietary, not redistributable |
+
+**LINE cannot be cross-compiled.** It is a Cygwin program: `pei-i386`, imports
+`msys-2.0.dll`, calls `cygwin_attach_dll`/`cygwin_internal`/`cygwin_premain`.
+mingw-w64 cannot produce that, so it needs 32-bit MSYS2 on a Windows host —
+which is why the `line` job is the only thing in this repo on a Windows
+runner, and why `msys2/setup-msys2` is no help (MSYS2 dropped i686 in 2020).
+Everything else we ship cross-builds from Linux.
+
+That job exists because making users build LINE themselves was our single
+biggest setup failure: a 64-bit MSYS2 build yields `0xc000007b` with
+`msys-gcc_s-1.dll` vs `msys-gcc_s-seh-1.dll` as the only tell.
+
+It also unblocks **patching LINE**, which is the larger prize. Three of its
+limits are already in our way and none can be touched while LINE is a binary
+someone else built: `fopen64` that MinHook refuses to hook (see P4 below), the
+whitelist confining the game to its own directory, and `fixPathIfNeeded`
+handling only `/tmp`. Building it ourselves from a pinned commit is the
+precondition; forking it is not decided and should not be done casually —
+the seam at `platform/windows/line.rs` is what keeps LINE replaceable.
+
 ## Remaining work, with research already done
 
 ### P4 — TTY redirects on Windows

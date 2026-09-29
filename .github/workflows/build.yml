@@ -131,3 +131,278 @@ jobs:
         name: dist-windows
         path: out
 
+  # ---------------------------------------------------------------------------
+  # Everything below is additive: nothing above refers to it, so reverting the
+  # commit that added it restores the previous pipeline exactly.
+  # ---------------------------------------------------------------------------
+
+  line:
+    # LINE is a Cygwin program -- it imports msys-2.0.dll and calls
+    # cygwin_attach_dll/cygwin_internal -- so mingw-w64 cannot cross-build it.
+    # It has to be built in 32-bit MSYS2 on a Windows runner. msys2/setup-msys2
+    # is no help: MSYS2 dropped i686 in 2020 and the action only ships x86_64.
+    # Recipe: axylol/line's own workflow at the pinned SHA, plus error checking
+    # (its scripts/ci.sh has no `set -e` and exits 0 when the compile fails).
+    runs-on: windows-latest
+    timeout-minutes: 45
+    env:
+      LINE_REF: f18629798fe55acd1bacfd7e55d070d882cfe605
+      MSYS2_TARBALL: msys2-base-i686-20210705.tar.xz
+    steps:
+    # Only LINE is checked out here. If a checkout of *our* repo is ever added,
+    # put it FIRST: actions/checkout runs `git clean -ffdx` in its own path, so
+    # a root checkout deletes a sibling ./line that already exists.
+    - name: Check out LINE (pinned)
+      uses: actions/checkout@v4
+      with:
+        repository: axylol/line
+        ref: ${{ env.LINE_REF }}
+        path: line
+        persist-credentials: false
+
+    # Cache the OUTPUT, not C:\msys32: `rebaseall -p` bakes absolute load
+    # addresses into every Cygwin DLL, so a restored tree is only self-
+    # consistent if the DLL set is byte-identical, and actions/cache round-trips
+    # through tar, which loses the SYSTEM attribute that makes Cygwin symlinks
+    # work. Both inputs here are pinned, so this key effectively never moves.
+    - name: Restore built LINE
+      id: cache
+      uses: actions/cache@v4
+      with:
+        path: line/dist
+        # No restore-keys: a partial hit would be worse than a miss.
+        # Bump -v1 by hand when the package list or the tarball changes.
+        key: line-dist-${{ env.LINE_REF }}-${{ env.MSYS2_TARBALL }}-v1
+
+    - name: Install 32-bit MSYS2
+      if: steps.cache.outputs.cache-hit != 'true'
+      shell: pwsh
+      run: |
+        $ErrorActionPreference = 'Stop'
+        Invoke-WebRequest 'https://7-zip.org/a/7z2408-x64.exe' -OutFile '7z-setup.exe'
+        Start-Process '.\7z-setup.exe' -ArgumentList '/S' -Verb RunAs -Wait
+        $7z = "$env:ProgramFiles\7-Zip\7z.exe"
+        if (-not (Test-Path $7z)) { throw '7-Zip did not install' }
+
+        Invoke-WebRequest "https://repo.msys2.org/distrib/i686/$env:MSYS2_TARBALL" -OutFile $env:MSYS2_TARBALL
+        # Printed so it can be pinned later; a mirror would then be provable.
+        Write-Host ('sha256 = ' + (Get-FileHash $env:MSYS2_TARBALL -Algorithm SHA256).Hash.ToLower())
+
+        # Two steps, not upstream's `7z x -so | 7z x -si`: a native-to-native
+        # pipe in PowerShell routes bytes through the object pipeline.
+        $tar = $env:MSYS2_TARBALL -replace '\.xz$', ''
+        & $7z x $env:MSYS2_TARBALL -o"$env:RUNNER_TEMP" -aoa
+        if ($LASTEXITCODE -ne 0) { throw "7z (xz) failed: $LASTEXITCODE" }
+        # -oC:\ stays unquoted: PowerShell re-quotes native arguments and a
+        # trailing \ before the closing quote reaches the CRT as an escaped
+        # quote, so -o"C:\" would arrive as -oC:" instead.
+        & $7z x "$env:RUNNER_TEMP\$tar" -ttar -aoa -oC:\
+        if ($LASTEXITCODE -ne 0) { throw "7z (tar) failed: $LASTEXITCODE" }
+        if (-not (Test-Path 'C:\msys32\usr\bin\bash.exe')) { throw 'C:\msys32 missing after extract' }
+
+    - name: Build LINE
+      if: steps.cache.outputs.cache-hit != 'true'
+      shell: pwsh
+      working-directory: line
+      run: |
+        # GitHub's pwsh wrapper exits with only the LAST command's code, and
+        # $ErrorActionPreference does not apply to native executables. Without
+        # this helper a failed pacman or a failed compile is invisible.
+        $bash = 'C:\msys32\usr\bin\bash.exe'
+        function Msys([string]$cmd, [switch]$Tolerant) {
+          Write-Host "::group::msys2: $cmd"
+          & $bash -lc $cmd
+          $code = $LASTEXITCODE
+          Write-Host '::endgroup::'
+          if ($code -ne 0) {
+            if ($Tolerant) { Write-Host "ignored (exit $code)" }
+            else { throw "msys2 failed (exit $code): $cmd" }
+          }
+        }
+        Msys ' ' -Tolerant                        # first run: post-install scripts
+        Msys 'pacman --noconfirm -Syuu' -Tolerant # the core update kills the shell by design
+        Msys 'pacman --noconfirm -Syuu'           # this one must succeed
+
+        # CHERE_INVOKING keeps bash in this step's working directory; without it
+        # `-l` sources /etc/profile, cd's to $HOME and ./scripts/ci.sh is not
+        # found. It has to be set in the same run: block -- each step is its own
+        # process. MSYSTEM=MSYS picks the MSYS (not MINGW) environment.
+        $env:CHERE_INVOKING = 'yes'
+        $env:MSYSTEM = 'MSYS'
+
+        # wget is added to upstream's list: ci.sh fetches the third-party
+        # licence texts with it and, having no `set -e`, would produce a
+        # licence-incomplete dist and exit 0 if it were missing.
+        Msys 'pacman --noconfirm --needed -S base-devel msys2-devel cmake ninja wget'
+        Msys 'rebaseall -p'
+        # Builds, strips, copies the three msys DLLs out of C:\msys32\usr\bin
+        # and fetches the licence texts: packaging and GPL compliance in one.
+        Msys './scripts/ci.sh'
+
+    # Always runs, cache hit or not, so a restored cache is validated too.
+    - name: Verify the LINE build
+      shell: pwsh
+      working-directory: line
+      run: |
+        $ErrorActionPreference = 'Stop'
+
+        # ci.sh is `if [ -e ./build/line.exe ]; then ... fi` with no set -e:
+        # a failed compile exits 0 having produced no dist at all.
+        $bins = @('dist/line.exe','dist/msys-2.0.dll','dist/msys-gcc_s-1.dll','dist/msys-stdc++-6.dll')
+        $docs = @('dist/LICENSE.txt','dist/3rd-party-softwares/msys2-runtime.txt',
+                  'dist/3rd-party-softwares/ELFIO.txt','dist/3rd-party-softwares/MinHook.txt')
+        foreach ($f in ($bins + $docs)) {
+          if (-not (Test-Path $f))        { throw "missing $f" }
+          if ((Get-Item $f).Length -eq 0) { throw "empty $f" }
+        }
+        if (Test-Path 'dist/msys-gcc_s-seh-1.dll') { throw '64-bit MSYS2 runtime present' }
+
+        # 1. PE COFF machine word: 0x014c = i386, 0x8664 = x86-64. Checked on
+        #    all four files -- the failure users hit is a 32-bit exe shipped
+        #    with 64-bit DLLs, which gives them 0xc000007b.
+        function Get-PeMachine([string]$path) {
+          $fs = [IO.File]::OpenRead((Resolve-Path $path)); try {
+            $br = New-Object IO.BinaryReader($fs)
+            $fs.Position = 0x3c; $fs.Position = $br.ReadUInt32()
+            if ($br.ReadUInt32() -ne 0x00004550) { throw "$path is not a PE file" }
+            return $br.ReadUInt16()
+          } finally { $fs.Dispose() }
+        }
+        foreach ($f in $bins) {
+          $m = Get-PeMachine $f
+          Write-Host ('{0,-30} machine 0x{1:x4}' -f $f, $m)
+          if ($m -ne 0x014c) { throw "$f is not 32-bit x86" }
+        }
+
+        # 2. Cygwin-linked, not mingw. Needs no toolchain, so this one also
+        #    runs on a cache hit; the real import tables are read below.
+        $ascii = [Text.Encoding]::ASCII.GetString([IO.File]::ReadAllBytes((Resolve-Path 'dist/line.exe')))
+        if ($ascii -notmatch 'msys-2\.0\.dll') { throw 'line.exe does not reference msys-2.0.dll: not a Cygwin build' }
+        foreach ($bad in @('msys-gcc_s-seh-1\.dll','libstdc\+\+-6\.dll','libgcc_s_[a-z0-9]+-1\.dll','libwinpthread-1\.dll')) {
+          if ($ascii -match $bad) { throw "line.exe references a runtime we do not ship: $bad" }
+        }
+
+        # 3. The actual import tables, when a toolchain is present.
+        $bash = 'C:\msys32\usr\bin\bash.exe'
+        if (Test-Path $bash) {
+          & $bash -lc 'for f in dist/*.exe dist/*.dll; do echo "== $f"; objdump -p "$f" | sed -n "s/^\s*DLL Name: //p" | sort -u; done | tee imports.txt'
+          if ($LASTEXITCODE -ne 0) { throw 'objdump failed' }
+          $imports = Get-Content imports.txt | Where-Object { $_ -notmatch '^==' }
+          if ($imports -notcontains 'msys-2.0.dll') { throw 'no msys-2.0.dll import' }
+          foreach ($i in $imports) {
+            if ($i -match '^msys-' -and $i -notmatch '^msys-(2\.0|gcc_s-1|stdc\+\+-6)\.dll$') { throw "unshipped msys import: $i" }
+          }
+          Remove-Item imports.txt
+          & $bash -lc 'pacman -Q > dist/3rd-party-softwares/msys2-packages.txt'
+        } else {
+          Write-Host 'cache hit: C:\msys32 absent, import-table check skipped'
+        }
+
+        # Provenance, so a user report traces back to an exact source commit.
+        # git rev-parse proves the SHA rather than echoing the pin back.
+        $head = (& git rev-parse HEAD).Trim()
+        if ($head -ne $env:LINE_REF) { throw "checked out $head, expected $env:LINE_REF" }
+        @(
+          'LINE - a Windows loader for Linux ELF programs, by axylol.'
+          'Licensed GPL-3.0, the same licence as WanganArcadeLoader.'
+          ''
+          'line.exe and the msys-*.dll files beside it were built by'
+          "WanganArcadeLoader's CI:"
+          ''
+          '  source      https://github.com/axylol/line'
+          "  commit      $head"
+          "  toolchain   $env:MSYS2_TARBALL (32-bit MSYS2), gcc / cmake / ninja"
+          "  built       $((Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ'))"
+          "  by          $env:GITHUB_REPOSITORY run $env:GITHUB_RUN_ID"
+          ''
+          'LINE is unmodified. The complete corresponding source for that'
+          'commit is the "line-source" artifact of the same CI run, and is'
+          'also available from the URL above.'
+        ) | Set-Content -Encoding utf8 dist/SOURCE.txt
+
+    - name: Smoke-test line.exe outside MSYS2
+      shell: pwsh
+      working-directory: line/dist
+      run: |
+        $ErrorActionPreference = 'Stop'
+        # Exactly the user's situation: these files, and nothing from C:\msys32
+        # on PATH. A wrong-bitness DLL set dies here before printing anything.
+        $env:PATH = "$env:SystemRoot\system32;$env:SystemRoot"
+        New-Item -ItemType File -Force stdin.txt | Out-Null
+        $p = Start-Process -FilePath '.\line.exe' -NoNewWindow -PassThru `
+               -RedirectStandardInput stdin.txt `
+               -RedirectStandardOutput stdout.txt -RedirectStandardError stderr.txt
+        if (-not $p.WaitForExit(60000)) { $p.Kill(); throw 'line.exe hung' }
+        Get-Content stdout.txt, stderr.txt -ErrorAction SilentlyContinue | Write-Host
+        Remove-Item stdin.txt, stdout.txt, stderr.txt, line.exe.stackdump -ErrorAction SilentlyContinue
+        Write-Host ('exit code: {0} (0x{1:x8})' -f $p.ExitCode, ($p.ExitCode -band 0xffffffff))
+        # Any ordinary exit is fine: this proves the file set loads, not that
+        # LINE did anything useful with no arguments.
+        if ($p.ExitCode -eq -1073741701) { throw 'STATUS_INVALID_IMAGE_FORMAT (0xc000007b): wrong bitness' }
+        if ($p.ExitCode -eq -1073741515) { throw 'STATUS_DLL_NOT_FOUND (0xc0000135): bundle is not self-contained' }
+
+    - uses: actions/upload-artifact@v4
+      with:
+        name: line
+        path: line/dist
+        # The default (warn) would upload nothing and leave the job green.
+        if-no-files-found: error
+
+    # GPLv3 section 6: keep the corresponding source with the binaries.
+    - name: Archive LINE's source
+      shell: pwsh
+      working-directory: line
+      run: |
+        git archive --format=zip --prefix=line-${{ env.LINE_REF }}/ -o "$env:RUNNER_TEMP\line-source.zip" HEAD
+        if ($LASTEXITCODE -ne 0) { throw 'git archive failed' }
+    - uses: actions/upload-artifact@v4
+      with:
+        name: line-source
+        path: ${{ runner.temp }}/line-source.zip
+        if-no-files-found: error
+
+  bundle:
+    # A merge job: it consumes what the other jobs already publish, which is why
+    # neither build nor windows had to change. upload-artifact@v4 refuses a
+    # second upload under a name already used in the run (v3 merged into it),
+    # so the combined bundle is a new artifact rather than an addition to
+    # dist-windows. Runs on Linux; Windows runners bill at 2x for no gain here.
+    needs: [ windows, line ]
+    runs-on: ubuntu-24.04
+    steps:
+    - uses: actions/checkout@v4          # only for our own LICENSE
+    - uses: actions/download-artifact@v4
+      with:
+        name: dist-windows               # with `name:`, contents land in path directly
+        path: out
+    - uses: actions/download-artifact@v4
+      with:
+        name: line
+        path: line-dist
+
+    - name: Assemble the bundle
+      run: |
+        set -euo pipefail
+        # Fail loudly rather than silently overwriting part of dist-windows.
+        for f in line.exe msys-2.0.dll msys-gcc_s-1.dll msys-stdc++-6.dll; do
+          if [ -e "out/$f" ]; then echo "collision: out/$f already exists"; exit 1; fi
+          cp "line-dist/$f" out/
+        done
+        mkdir -p out/licenses/line
+        cp LICENSE out/LICENSE.txt       # ours, GPL-3.0; dist-windows ships none today
+        cp line-dist/LICENSE.txt line-dist/SOURCE.txt out/licenses/line/
+        cp -r line-dist/3rd-party-softwares out/licenses/line/
+        echo "--- bundle contents ---"
+        find out -type f | sort
+        for f in line.exe msys-2.0.dll msys-gcc_s-1.dll msys-stdc++-6.dll \
+                 wal_3dxp.dll start.bat fix-libso.ps1 README.md LICENSE.txt \
+                 config.toml keyconfig.toml gamecontrollerdb.txt data/config.lua \
+                 licenses/line/LICENSE.txt licenses/line/SOURCE.txt; do
+          test -s "out/$f" || { echo "bundle is missing $f"; exit 1; }
+        done
+
+    - uses: actions/upload-artifact@v4
+      with:
+        name: dist-windows-bundle
+        path: out
+        if-no-files-found: error

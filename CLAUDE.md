@@ -194,7 +194,10 @@ numbers.
   **`librt.so.1` is deliberately left empty** — LINE supplies its functions.
 - **32-bit MSYS2 only** for `line.exe` and its `msys-*.dll`s. 64-bit ones give
   `0xc000007b`; the giveaway is `msys-gcc_s-1.dll not found` (64-bit ships
-  `msys-gcc_s-seh-1.dll` instead).
+  `msys-gcc_s-seh-1.dll` instead). CI now builds these four itself (the `line`
+  job) and the `dist-windows-bundle` artifact contains them, so this only
+  matters if you hand-assemble a folder — but it is still the most common
+  setup failure, and the checks in that job exist to keep it out of releases.
 - Formatting is **hard tabs** (`rustfmt.toml`), matching upstream.
 - The Windows build has no `plugins/` support, and `ignore_custom_ioctls` is
   still Linux-only. `file_redirect` now works on both (`windows/files.rs`
@@ -225,10 +228,15 @@ numbers.
 ## Testing on the Windows machine
 
 The game folder is `C:\Wangan Midnight Maximum Tune 3DX+ (Export) (2010)`.
-Deploy by copying the built DLL plus `dist/*` (minus `start.sh`) and
-`dist-windows/{start.bat,fix-libso.ps1,README.md}` into it — exactly what the
-`windows` CI job's `Package` step produces. Then run `start.bat` from that
-folder.
+The simplest deploy is to unzip the `dist-windows-bundle` artifact into it:
+that is the `windows` job's output plus the `line` job's `line.exe` and three
+msys DLLs. Only `cg.dll`, `cgGL.dll` and `soft_oal.dll` still have to come
+from elsewhere. Then run `start.bat` from that folder.
+
+Deploying a locally built DLL means copying it plus `dist/*` (minus
+`start.sh`) and `dist-windows/{start.bat,fix-libso.ps1,README.md}` — exactly
+what the `windows` job's `Package` step produces — over a folder that already
+has `line.exe` beside it.
 
 Logs to collect afterwards: `wal_3dxp.log` (the loader), `line_console.log`
 (LINE and the game), and `line.exe.stackdump` if it exists.
@@ -240,7 +248,26 @@ forked from `vixen256/WanganArcadeLoader0.5` (added as `upstream`). Note that
 `gh` resolves to `upstream` unless you pass
 `--repo FRDS/WanganArcadeLoader0.5`.
 
-CI (`.github/workflows/build.yml`) has two jobs: `build` (Linux i586, which
-also compiles openal-soft from source and so is slow) and `windows` (cross-
-build, DLL export and import checks, a `start.bat` lint, and both test suites
-under Wine).
+CI (`.github/workflows/build.yml`) has four jobs:
+
+- `build` — Linux i586; also compiles openal-soft from source, so it is slow.
+- `windows` — cross-build, DLL export and import checks, a `start.bat` lint,
+  and both test suites under Wine.
+- `line` — the only job on a Windows runner. Builds `line.exe` in 32-bit
+  MSYS2 from a pinned `axylol/line` commit, because LINE is a Cygwin program
+  and cannot be cross-compiled. Its output is cached on the pinned SHA, so
+  after the first run it restores in seconds.
+- `bundle` — `needs: [windows, line]`; merges their artifacts into
+  `dist-windows-bundle`.
+
+`line` and `bundle` are deliberately additive: nothing above them refers to
+them, so reverting the commit that added them restores the previous pipeline
+exactly. Keep it that way — don't wire `build` or `windows` into them.
+
+Two traps if you touch the `line` job. LINE's `scripts/ci.sh` has no `set -e`
+and wraps its body in `if [ -e ./build/line.exe ]`, so a failed compile exits
+**0** with no `dist/` at all; and GitHub's `pwsh` shell propagates only the
+last command's exit code. Almost every check in that job exists because of
+one of those two, so don't thin them out. Never use `shell: bash` there
+either — that is Git Bash, which carries its own Cygwin `msys-2.0.dll`, and
+two Cygwin runtimes in one process give "cygheap base mismatch".
