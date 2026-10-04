@@ -19,6 +19,32 @@ use std::sync::atomic::{AtomicPtr, Ordering};
 pub const OPENAL_LIBRARY: &str = "soft_oal.dll";
 pub const CG_LIBRARY: &str = "cg.dll";
 
+/// Asks a hybrid-graphics laptop to put us on the discrete GPU.
+///
+/// Both vendors decide by looking for an exported symbol: NVIDIA Optimus wants
+/// `NvOptimusEnablement` non-zero, AMD PowerXpress wants
+/// `AmdPowerXpressRequestHighPerformance`. Without them the game lands on the
+/// integrated GPU, which on one test laptop meant Intel UHD rather than an RTX
+/// 2070 sitting right beside it.
+///
+/// **This may not be honoured.** Both vendors document the export as coming
+/// from the *executable*, and we are a DLL that LINE loads at run time, so the
+/// driver may well have chosen before it ever sees us. It costs two symbols to
+/// try, and `GL renderer` in the log says which card was actually used, so the
+/// experiment reports its own result. The per-application setting in Windows
+/// Graphics Settings is the reliable fallback -- see dist-windows/README.md.
+///
+/// Worth knowing on this game specifically: the discrete GPU is NVIDIA, so it
+/// has the `GL_NV_*` extensions the dump's shipped shaders need, and
+/// `shader.rs` will then leave them in place instead of converting them.
+#[no_mangle]
+#[allow(non_upper_case_globals)]
+pub static NvOptimusEnablement: u32 = 1;
+
+#[no_mangle]
+#[allow(non_upper_case_globals)]
+pub static AmdPowerXpressRequestHighPerformance: u32 = 1;
+
 #[link(name = "winmm")]
 extern "system" {
 	fn timeBeginPeriod(period: u32) -> u32;

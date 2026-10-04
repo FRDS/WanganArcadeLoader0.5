@@ -109,7 +109,8 @@ jobs:
         set -euo pipefail
         dll=target/i686-pc-windows-gnu/release/wal_3dxp.dll
         exports=$(i686-w64-mingw32-objdump -p "$dll" | sed -n '/\[Ordinal\/Name Pointer\] Table/,/^$/p')
-        for name in OnInitialize OnPreExecute OnDlOpen OnDlSym; do
+        # The last two ask a hybrid-graphics laptop for the discrete GPU.
+        for name in OnInitialize OnPreExecute OnDlOpen OnDlSym NvOptimusEnablement AmdPowerXpressRequestHighPerformance; do
           echo "$exports" | grep -qw "$name" || { echo "missing export $name"; exit 1; }
         done
         # Only DLLs every Windows install has: SDL2 and GLFW are linked statically.

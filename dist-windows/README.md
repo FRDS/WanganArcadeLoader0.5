@@ -117,6 +117,42 @@ on Windows:
 - Networking stays off unless `local_ip` is set.
 - The `plugins/` folder isn't supported on Windows yet.
 
+## Laptops with two GPUs
+
+On a hybrid laptop Windows usually starts the game on the integrated GPU, so
+an Intel UHD can end up rendering while a discrete NVIDIA or AMD card sits
+idle. `wal_3dxp.dll` exports the two symbols the vendors look for
+(`NvOptimusEnablement`, `AmdPowerXpressRequestHighPerformance`) to ask for the
+discrete one, but both vendors document those as coming from the *executable*
+and we are a DLL that LINE loads, so the driver may ignore them.
+
+Check which card you actually got — `wal_3dxp.log` names it near the top:
+
+```
+[wal_3dxp] GL renderer: Intel(R) UHD Graphics
+```
+
+If that isn't the card you wanted, set it per application, which always
+works. Either Settings → System → Display → Graphics → Browse → pick
+`line.exe` → Options → High performance, or run this once, with the path
+edited to match your install:
+
+```powershell
+$exe = "D:\Wangan Midnight Maximum Tune 3DX+ (Export) (2010)\line.exe"
+$key = "HKCU:\Software\Microsoft\DirectX\UserGpuPreferences"
+New-Item -Path $key -Force | Out-Null
+New-ItemProperty -Path $key -Name $exe -Value "GpuPreference=2;" -PropertyType String -Force | Out-Null
+```
+
+That writes exactly what the Settings page writes, for your user only, and
+the Settings page will show it and can undo it. `GpuPreference=1;` is the
+integrated GPU instead, and removing the entry restores the default. Set it
+on `line.exe`, not on `start.bat` — the batch file is not what renders.
+
+Worth knowing on an NVIDIA card: it has the `GL_NV_*` extensions the dump's
+shipped shaders need, so `shader_mode = auto` will leave them in place rather
+than converting them, which is the better of the two.
+
 ## Building LINE yourself
 
 Only needed if you want to change LINE or check our build. LINE is a Cygwin
