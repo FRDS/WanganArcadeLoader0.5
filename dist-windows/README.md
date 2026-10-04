@@ -104,8 +104,23 @@ on Windows:
   cannot tell you any of this — the loader has to.
 - `fps_limit` (default `60`): Linux caps the frame rate with MangoHUD, Windows
   uses this. `0` turns the cap off.
-- `fullscreen = true` is borderless at your monitor's resolution; the game's
-  `width` × `height` image is scaled to fit.
+- `width` × `height` is the resolution the game renders at. **Windowed, it has
+  to fit inside the window's client area.** A window can't be as tall as your
+  display once it has a title bar, so 1080 on a 1080p screen will never fit —
+  anything that doesn't is clipped before it can be drawn. The loader says so
+  in `wal_3dxp.log`; if you once saw a frozen band across the top of the game,
+  that was this.
+- `fullscreen = true` is borderless at your monitor's current resolution; the
+  game's `width` × `height` image is scaled to fit, letterboxed if the aspect
+  ratios differ. This is the safe choice, and the one to use for a 4:3 render
+  size on a 16:9 panel.
+- `fullscreen_exclusive = true` (with `fullscreen = true`) changes the display
+  mode to `width` × `height` instead. When your monitor offers that mode you
+  get it exactly: no letterbox, no upscale, sharpest possible. When it doesn't
+  — and 4:3 modes like 1440×1080 are rarely offered on a 16:9 panel — the
+  closest mode is used instead, and the log names what you got and lists what
+  the monitor has. A mode change also disturbs the rest of your desktop, which
+  is why it's off by default.
 - `shader_mode` (default `auto`): the dump's shaders ship compiled for NVIDIA
   only. Before the game reads them, the loader asks your driver whether it has
   the extensions they need; if it doesn't, it keeps the originals as `*.orig`

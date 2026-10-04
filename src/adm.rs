@@ -205,8 +205,6 @@ unsafe extern "C" fn adm_window() -> *mut AdmWindow {
 		glfw.window_hint(WindowHint::OpenGlDebugContext(true));
 	}
 	let (mut window, _) = glfw.with_primary_monitor(|glfw, m| {
-		// Fullscreen is borderless at the monitor's current mode, so the display
-		// mode never changes; adm_swap_buffers scales the game's frame to fit.
 		let fullscreen = if CONFIG.fullscreen {
 			m.and_then(|m| m.get_video_mode().map(|mode| (m, mode)))
 		} else {
@@ -218,9 +216,22 @@ unsafe extern "C" fn adm_window() -> *mut AdmWindow {
 				glfw.window_hint(WindowHint::GreenBits(Some(mode.green_bits)));
 				glfw.window_hint(WindowHint::BlueBits(Some(mode.blue_bits)));
 				glfw.window_hint(WindowHint::RefreshRate(Some(mode.refresh_rate)));
+				// Asking for the monitor's current mode means GLFW picks the
+				// mode already in use and never changes it, which is
+				// borderless fullscreen with the frame scaled to fit. Asking
+				// for the render size instead makes GLFW set the mode, so the
+				// drawable matches CONFIG exactly -- no letterbox, no upscale,
+				// and the capture in adm_swap_buffers cannot fall short. GLFW
+				// silently substitutes the closest mode when the monitor has
+				// no such mode, which is reported after creation.
+				let (width, height) = if CONFIG.fullscreen_exclusive {
+					(CONFIG.width, CONFIG.height)
+				} else {
+					(mode.width, mode.height)
+				};
 				glfw.create_window(
-					mode.width,
-					mode.height,
+					width,
+					height,
 					"WanganArcadeLoader",
 					WindowMode::FullScreen(m),
 				)
@@ -237,6 +248,51 @@ unsafe extern "C" fn adm_window() -> *mut AdmWindow {
 	GLFW_WINDOW = window.window_ptr();
 	window.make_current();
 	window.set_resizable(true);
+	// The hint above asked for a non-resizable window to keep tiling window
+	// managers from tiling it, and this hands resizing back. Keep both, but
+	// stop the window being dragged smaller than the render size: the game
+	// rasterises into a CONFIG-sized viewport, and a shorter drawable clips
+	// it before anything can be captured.
+	window.set_size_limits(Some(CONFIG.width), Some(CONFIG.height), None, None);
+
+	// What we asked for is not what we necessarily got. A fullscreen request
+	// is matched against the modes the monitor actually has, and a windowed
+	// one is bounded by the desktop -- a client area cannot be as tall as the
+	// display once there is a title bar. Report the difference rather than
+	// letting it turn into clipped rows nobody can account for.
+	let (drawable_width, drawable_height) = window.get_framebuffer_size();
+	platform::log(&format!(
+		"adm: render {}x{}, drawable {drawable_width}x{drawable_height}, {}",
+		CONFIG.width,
+		CONFIG.height,
+		match (CONFIG.fullscreen, CONFIG.fullscreen_exclusive) {
+			(true, true) => "exclusive fullscreen",
+			(true, false) => "borderless fullscreen",
+			(false, _) => "windowed",
+		}
+	));
+	if drawable_width < CONFIG.width as i32 || drawable_height < CONFIG.height as i32 {
+		platform::log(
+			"adm: the drawable is smaller than the render size, so part of every frame is \
+			 clipped away before it can be shown -- use fullscreen, or a render size that fits",
+		);
+		// Only worth listing when the request could not be met, and only the
+		// distinct sizes: a monitor reports the same size once per refresh
+		// rate, which would otherwise be pages of near-duplicates.
+		glfw.with_primary_monitor(|_, m| {
+			if let Some(m) = m {
+				let mut sizes: Vec<(u32, u32)> = m
+					.get_video_modes()
+					.iter()
+					.map(|v| (v.width, v.height))
+					.collect();
+				sizes.sort_unstable();
+				sizes.dedup();
+				let list: Vec<String> = sizes.iter().map(|(w, h)| format!("{w}x{h}")).collect();
+				platform::log(&format!("adm: this monitor offers {}", list.join(", ")));
+			}
+		});
+	}
 	// The engine advances one simulation step per frame, so the swap interval
 	// decides how fast the game plays, not just how smooth it looks. Vsync is
 	// right on any display that holds 60; turn it off on one that cannot, so
@@ -290,6 +346,14 @@ unsafe extern "C" fn adm_window() -> *mut AdmWindow {
 		0,
 	);
 	gl::BindTexture(gl::TEXTURE_2D, 0);
+	// TexImage2D with a null pointer leaves the contents undefined, and nothing
+	// else ever clears this texture -- the capture below only writes the part
+	// of it the drawable could supply. Any row we cannot fill would otherwise
+	// show whatever happened to be in memory for the life of the process,
+	// which is how a white band from the boot screen ends up frozen across the
+	// top of the game. Black makes those rows indistinguishable from letterbox.
+	gl::ClearColor(0.0, 0.0, 0.0, 1.0);
+	gl::Clear(gl::COLOR_BUFFER_BIT);
 	gl::BindFramebuffer(gl::FRAMEBUFFER, 0);
 
 	let adm = AdmWindow {
@@ -330,9 +394,40 @@ unsafe extern "C" fn adm_swap_buffers(window_ptr: *mut AdmWindow) -> c_int {
 	};
 
 	if should_blit {
-		let (window_width, window_height) = window.window.get_size();
+		// Pixels, not screen coordinates: the blits below are in pixels, and
+		// the two differ on a display with scaling.
+		let (window_width, window_height) = window.window.get_framebuffer_size();
 		let window_ar = window_width as f32 / window_height as f32;
 		let ar = CONFIG.width as f32 / CONFIG.height as f32;
+
+		// The game renders into the default framebuffer, so the most we can
+		// capture is what the drawable actually holds. Reading beyond it is
+		// undefined, and in practice leaves those rows of the FBO untouched
+		// for good -- the frozen band. A window shorter than CONFIG.height
+		// also means the game's own rasterisation was clipped, so there is
+		// nothing there to recover; the point of clamping is to leave the
+		// cleared black rather than stale pixels.
+		let captured_width = (CONFIG.width as i32).min(window_width);
+		let captured_height = (CONFIG.height as i32).min(window_height);
+
+		// Said once, not per frame. A short drawable is not recoverable --
+		// the engine rasterised into a CONFIG-sized viewport that the window
+		// clipped -- so the only useful response is to explain it.
+		if (captured_width, captured_height) != (CONFIG.width as i32, CONFIG.height as i32)
+			&& !SIZE_WARNED
+		{
+			SIZE_WARNED = true;
+			platform::log(&format!(
+				"adm: the window is {window_width}x{window_height} but the render size is {}x{}, \
+				 so {} column(s) and {} row(s) of each frame are clipped away before they can be \
+				 shown. A window cannot be taller than the display once it has a title bar -- use \
+				 fullscreen, or a render size that fits.",
+				CONFIG.width,
+				CONFIG.height,
+				(CONFIG.width as i32 - captured_width).max(0),
+				(CONFIG.height as i32 - captured_height).max(0),
+			));
+		}
 
 		let (viewport_width, viewport_height, viewport_x, viewport_y) = if window_ar > ar {
 			let viewport_width: i32 = ((window_height as f32) * ar) as i32;
@@ -349,12 +444,12 @@ unsafe extern "C" fn adm_swap_buffers(window_ptr: *mut AdmWindow) -> c_int {
 		gl::BlitFramebuffer(
 			0,
 			0,
-			CONFIG.width as i32,
-			CONFIG.height as i32,
+			captured_width,
+			captured_height,
 			0,
 			0,
-			CONFIG.width as i32,
-			CONFIG.height as i32,
+			captured_width,
+			captured_height,
 			gl::COLOR_BUFFER_BIT,
 			gl::NEAREST,
 		);
@@ -424,6 +519,8 @@ unsafe fn report_fps() {
 	FRAME_COUNT = 0;
 	RATE_SINCE = Some(now);
 }
+
+static mut SIZE_WARNED: bool = false;
 
 static mut NEXT_FRAME: Option<std::time::Instant> = None;
 

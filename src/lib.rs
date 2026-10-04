@@ -41,6 +41,13 @@ pub struct FileRedirect {
 #[serde(default)]
 pub struct Config {
 	fullscreen: bool,
+
+	/// Change the display mode to `width` x `height` instead of filling the
+	/// monitor's current mode. Exact when the monitor offers that mode, so
+	/// there is no letterbox and no upscale; GLFW silently falls back to the
+	/// closest mode when it does not, which `adm.rs` logs. Off by default:
+	/// borderless is the proven path, and a mode change disturbs the desktop.
+	fullscreen_exclusive: bool,
 	input_emu: bool,
 	card_emu: bool,
 	block_sudo: bool,
@@ -97,6 +104,7 @@ impl Default for Config {
 const fn default_config() -> Config {
 	Config {
 		fullscreen: false,
+		fullscreen_exclusive: false,
 		input_emu: true,
 		card_emu: true,
 		block_sudo: true,
