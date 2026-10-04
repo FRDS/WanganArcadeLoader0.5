@@ -329,8 +329,49 @@ pub unsafe fn ensure_portable(mode: ShaderMode) {
 		// No dump here, or nothing about it to reason over.
 		return;
 	}
+	// Put the question to the driver once, up front, and say what came back
+	// even when the decision below turns out not to need it. Without this a
+	// machine that always takes the "programs are missing" branch never
+	// reports whether the probe works at all, and "leaving data/shader as it
+	// is" reads the same whether the driver said no or could not be asked.
+	let mut wanted = state.required.clone();
+	for extension in &state.backup_required {
+		if !wanted.contains(extension) {
+			wanted.push(extension.clone());
+		}
+	}
+	let probed = if wanted.is_empty() {
+		None
+	} else {
+		let answer = unsupported_extensions(&wanted);
+		match &answer {
+			Some(absent) if absent.is_empty() => platform::log(&format!(
+				"shader: driver probe: has all of {}",
+				wanted.join(", ")
+			)),
+			Some(absent) => platform::log(&format!(
+				"shader: driver probe: lacks {} (of {})",
+				absent.join(", "),
+				wanted.join(", ")
+			)),
+			None => platform::log(
+				"shader: driver probe: could not make a context to ask, assuming unsupported",
+			),
+		}
+		answer
+	};
+	// decide() reuses that one answer rather than opening a second window.
+	let probe = |asked: &[String]| -> Option<Vec<String>> {
+		probed.as_ref().map(|absent| {
+			asked
+				.iter()
+				.filter(|extension| absent.contains(extension))
+				.cloned()
+				.collect()
+		})
+	};
 
-	match decide(mode, &state, unsupported_extensions) {
+	match decide(mode, &state, probe) {
 		Action::Leave(reason) => {
 			platform::log(&format!("shader: leaving data/shader as it is -- {reason}"));
 		}
@@ -378,6 +419,7 @@ unsafe fn recompile() {
 		(cg.destroy_context)(context);
 		return;
 	};
+	let mut sources = 0;
 	let mut written = 0;
 	let mut failed = 0;
 	for entry in entries.flatten() {
@@ -385,10 +427,30 @@ unsafe fn recompile() {
 		if path.extension().and_then(|e| e.to_str()) != Some("cg") {
 			continue;
 		}
-		let Ok(source) = std::fs::read_to_string(&path) else {
-			continue;
+		sources += 1;
+		// Skipping silently here is what made two programs vanish for good:
+		// `missing` then stays non-zero on every launch, so the capability
+		// check never runs and the files are never produced. Say what broke.
+		let bytes = match std::fs::read(&path) {
+			Ok(bytes) => bytes,
+			Err(error) => {
+				failed += 2;
+				platform::log(&format!("shader: cannot read {}: {error}", path.display()));
+				continue;
+			}
 		};
-		let Ok(source) = CString::new(source) else {
+		// Sources are ASCII, but a dump of a Japanese arcade game can carry
+		// Shift-JIS comments, which are not valid UTF-8 and used to lose the
+		// whole program. Only comments are affected, so convert lossily.
+		if std::str::from_utf8(&bytes).is_err() {
+			platform::log(&format!(
+				"shader: {} is not valid UTF-8, converting lossily (Shift-JIS comments?)",
+				path.display()
+			));
+		}
+		let Ok(source) = CString::new(String::from_utf8_lossy(&bytes).replace('\0', "")) else {
+			failed += 2;
+			platform::log(&format!("shader: cannot hand {} to Cg", path.display()));
 			continue;
 		};
 
@@ -428,7 +490,7 @@ unsafe fn recompile() {
 	// told apart from one that has simply already been done.
 	let _ = std::fs::write(format!("{SHADER_DIR}/.recompiled"), "arbvp1 arbfp1\n");
 	platform::log(&format!(
-		"shader: recompiled {written} programs to portable ARB, {failed} failed"
+		"shader: {sources} .cg sources -> recompiled {written} programs to portable ARB, {failed} failed"
 	));
 }
 
