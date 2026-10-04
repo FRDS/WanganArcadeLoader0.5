@@ -18,7 +18,7 @@ LINE's plugin.
 | P1 platform layer, Windows boot | done, proven on hardware |
 | P2 window + OpenGL | **done, rendering confirmed on hardware** |
 | P3 input (keyboard, pads, wheels) | keyboard and pad confirmed; wheels/pedals still untested |
-| P4 custom resolution + file/TTY redirects | resolution ported; `file_redirect` done on Windows, `ignore_custom_ioctls` still Linux-only |
+| P4 custom resolution + file/TTY redirects | resolution proven on hardware at 1440×1080 windowed and borderless; `file_redirect` done on Windows, `ignore_custom_ioctls` still Linux-only |
 | P5 custom BGM | not started |
 | P6 Gemballa unlock | not started, fully researched below |
 | P7 network / localhost split-screen | not started |
@@ -148,6 +148,56 @@ whitelist confining the game to its own directory, and `fixPathIfNeeded`
 handling only `/tmp`. Building it ourselves from a pinned commit is the
 precondition; forking it is not decided and should not be done casually —
 the seam at `platform/windows/line.rs` is what keeps LINE replaceable.
+
+## Known gaps, in the order I would take them
+
+Everything here is understood and deliberately left. None of it blocks a
+release; the first two are the only ones with user-visible consequences.
+
+- **The game renders into the default framebuffer, not our FBO.** That is why
+  the render size cannot exceed the window: the engine rasterises into a
+  `CONFIG`-sized viewport that a smaller drawable has already clipped, and
+  `adm_swap_buffers` only captures what survived. Giving the FBO a depth
+  attachment and pointing the engine's framebuffer binding at it would make
+  the render size independent of the window in every mode, and would delete
+  the `default → FBO → default` capture loop along with a class of bugs. It
+  is also a rewrite of the one path proven on three machines, and the FBO has
+  no depth or stencil today, so it needs care rather than enthusiasm. Until
+  then: fullscreen for any render size that does not fit the window.
+- **`shader.rs` recompiles to ARB when programs are missing, whatever the
+  driver can do.** The `missing > 0` branch in `decide()` returns before the
+  probe result is consulted, so a machine that lacks a few compiled programs
+  gets ARB even if it could run `fp40`/`vp40`. Never observed biting — every
+  machine tested so far lacks the NV extensions anyway — and fixing it means
+  choosing a target profile with no NVIDIA machine to test the choice
+  against. Worth doing the next time one is to hand.
+- **`fopen64` cannot be hooked** (MinHook declines LINE's stub at `0x40ef00`),
+  so some file activity is invisible to `file_log`. This is not cosmetic: the
+  engine reads `data/shader/*` through it, so the one measurement that would
+  settle when the engine loads shaders relative to window creation is the one
+  we cannot take.
+- **`limit_fps()` busy-spins the last 2ms of every frame**, about 12% of one
+  core continuously. Harmless on a desktop, less so on a Max-Q laptop. A
+  swap-interval divisor would remove it on exact-multiple refresh rates, but
+  the limiter has to stay as a backstop regardless, so the prize is small and
+  the code is the one thing holding game speed correct.
+- **Untested:** steering wheels and pedals, a full race to completion, and
+  anything on Linux since the input rewrite.
+
+## The test rig, as of this work
+
+Two machines, and confusing them wastes runs.
+
+- **Laptop** — Intel UHD + RTX 2070 Max-Q, 240Hz panel, dump on `D:`. The
+  configuration that works best: Windows' per-application GPU preference
+  pointed at the discrete card, `1440x1080`, `fullscreen = true`. That gives
+  the dump's original `fp40`/`vp40` shaders, a 1:1 unscaled presentation and
+  a flat 60.0 fps. On the integrated GPU the same resolution drops to the
+  low 50s, which on this engine means the game runs slow.
+- **Desktop** — Intel Iris Xe, dump on `C:`, also hosts the build toolchain
+  under WSL. Has the Cg Toolkit installed system-wide, which is why it was
+  the machine that caught `start.bat` converting shaders before the loader
+  could.
 
 ## Remaining work, with research already done
 
