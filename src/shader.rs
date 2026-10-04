@@ -249,6 +249,8 @@ unsafe fn listing(cg: &Cg, context: CgContext) -> String {
 enum Action {
 	/// The programs already in place suit this driver.
 	Leave(String),
+	/// Put the `.orig` copies back.
+	Restore(String),
 	/// Compile the `.cg` sources to portable ARB.
 	Recompile(String),
 }
@@ -293,25 +295,25 @@ fn decide(
 		};
 	}
 
-	// What is in place is already portable. An earlier run set the shipped
-	// programs aside, and if this driver can run them they are the better
-	// ones -- but putting them back automatically is not safe yet.
+	// What is in place is already portable. If an earlier run set the shipped
+	// programs aside and this driver can run them, hand them back -- they are
+	// the better ones, and this is the folder-moved-between-machines case.
 	//
-	// On a hybrid laptop (Intel iGPU + discrete NVIDIA) the probe opens its
-	// own window, which the driver may place on a different GPU than the one
-	// the game ends up rendering with. A real machine in the test set does
-	// exactly this: the probe can see an RTX 2070 while the game runs on
-	// Intel UHD. Restoring NVIDIA-only programs there puts the black world
-	// straight back. Until the probe's answer can be tied to the GPU the game
-	// actually uses, say so and let the user decide.
+	// This was advisory for a while, out of a worry that on a hybrid laptop
+	// the probe's own window might land on a different GPU than the one the
+	// game renders with. It does not: the OpenGL ICD is loaded once per
+	// process, so the game inherits whatever card the probe's context brought
+	// in. Confirmed on the Intel UHD + RTX 2070 Max-Q laptop in both
+	// configurations -- with no GPU preference set, probe and game both
+	// reported Intel; with the per-application preference set to the discrete
+	// card, the same run logged "driver probe: has all of
+	// GL_NV_vertex_program3, GL_NV_fragment_program2" and "GL renderer:
+	// NVIDIA GeForce RTX 2070 with Max-Q Design".
 	if state.backups > 0 && !state.backup_required.is_empty() {
 		if let Some(absent) = probe(&state.backup_required) {
 			if absent.is_empty() {
-				return Action::Leave(format!(
-					"the programs in place are portable, and this driver reports {}, so the \
-					 shipped ones in *.orig would work -- set shader_mode = \"original\" to use \
-					 them, which is not done automatically because a hybrid GPU can report one \
-					 card here and render on another",
+				return Action::Restore(format!(
+					"this driver has {}, so the shipped programs can be used again",
 					state.backup_required.join(", ")
 				));
 			}
@@ -393,6 +395,13 @@ pub unsafe fn ensure_portable(mode: ShaderMode) {
 	match decide(mode, &state, probe) {
 		Action::Leave(reason) => {
 			platform::log(&format!("shader: leaving data/shader as it is -- {reason}"));
+		}
+		Action::Restore(reason) => {
+			let restored = restore_originals();
+			let _ = std::fs::write(format!("{SHADER_DIR}/.recompiled"), "original\n");
+			platform::log(&format!(
+				"shader: put {restored} shipped programs back from .orig -- {reason}"
+			));
 		}
 		Action::Recompile(reason) if state.sources == 0 => {
 			platform::log(&format!(
@@ -621,13 +630,11 @@ mod tests {
 			backup_required: vec!["GL_NV_fragment_program2".to_string()],
 			backups: 62,
 		};
-		// Advisory only: a hybrid GPU can report one card to the probe and
-		// render on another, so the user is told rather than overridden.
-		let Action::Leave(reason) = decide(ShaderMode::Auto, &state, supports_everything) else {
-			panic!("expected advice, not an automatic restore");
-		};
-		assert!(reason.contains("shader_mode"), "{reason}");
-		// And nothing is said when that driver still cannot run them.
+		// The probe and the game share one OpenGL ICD per process, confirmed
+		// on an Intel + NVIDIA laptop, so this can act rather than advise.
+		let action = decide(ShaderMode::Auto, &state, supports_everything);
+		assert!(matches!(action, Action::Restore(_)), "{action:?}");
+		// ...but not when that driver still cannot run them.
 		let action = decide(ShaderMode::Auto, &state, supports_nothing);
 		assert!(matches!(action, Action::Leave(_)), "{action:?}");
 	}

@@ -41,11 +41,19 @@ Also proven, 2026-10-04/05:
   output (615 instruction lines each side); only the `# command line args`
   comment differs. So `shader.rs` needs no toolkit install and gives up
   nothing by not having one.
+- **The probe sees the GPU the game renders with, including on a hybrid.**
+  The OpenGL ICD is loaded once per process, so the game inherits whatever
+  card the probe's context brought in. Confirmed on the Intel UHD + RTX 2070
+  Max-Q laptop both ways: with no preference set both reported Intel, and
+  with Windows' per-application preference pointed at the discrete card the
+  same run logged `driver probe: has all of GL_NV_vertex_program3,
+  GL_NV_fragment_program2` beside `GL renderer: NVIDIA GeForce RTX 2070`.
+  That is why restoring `*.orig` is automatic again rather than advisory.
+  Note the `NvOptimusEnablement` export from our DLL did **not** achieve
+  this — the per-application setting did.
 
 Still unverified: steering wheels and pedals, audio, a full race to
-completion, whether the probe and the game agree on which GPU they see when a
-discrete card is in play (the reason `.orig` restore is advisory rather than
-automatic), and anything on Linux since the input rewrite (Linux is
+completion, and anything on Linux since the input rewrite (Linux is
 compile-only by decision — the GLFW keyboard switch and the SDL 0.38 bump are
 untested there).
 

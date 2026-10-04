@@ -38,9 +38,10 @@ gl_debug = false
 #
 #   auto      check the driver and do whichever is right (the default)
 #   portable  always compile portable ARB, even on NVIDIA
-#   original  use the shipped programs, restoring them from *.orig if an
+#   original  force the shipped programs, restoring them from *.orig if an
 #             earlier run replaced them -- expect a black world unless your
-#             GPU has the NVIDIA extensions they need
+#             GPU has the NVIDIA extensions they need. auto already does this
+#             for you when the driver supports them.
 #
 # Only set this if your driver reports support it doesn't honour.
 shader_mode = "auto"
