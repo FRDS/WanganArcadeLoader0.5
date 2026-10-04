@@ -177,12 +177,13 @@ loopback for split-screen. `clNet::setInterfaceAddress` is already stubbed on
 Windows. If the game's LAN session needs broadcast, loopback won't carry it —
 say so and move to real IPs.
 
-## Known bug, not yet fixed: `dist/start.sh` is destructive
+## Fixed: `dist/start.sh`'s destructive recompile
 
-The Linux launcher's shader recompile writes its `.recompiled` marker *before*
-doing any work and deletes each `.fp`/`.vp` with no backup, unlike `start.bat`
-which keeps `*.orig`. A run without cgc therefore leaves the game with no
-shader files at all and permanently skips the retry, so installing the Cg
-Toolkit afterwards changes nothing. `src/shader.rs` recovers the usual case but
-not this one — it triggers on finding `OPTION NV_` in an existing file, and
-here the files are gone. Both wants fixing.
+The Linux launcher used to write its `.recompiled` marker *before* doing any
+work and delete each `.fp`/`.vp` with no backup, so one run without `cgc` left
+the game with no shader files at all and then permanently skipped the retry.
+That block is gone: `shader.rs` does the job with the compiler inside
+`libCg.so`, which now ships beside the launcher, so `cgc` need not be
+installed. `shader.rs` also recovers the folders the old block wrecked — it
+rebuilds when the compiled programs are *missing*, not only when they carry
+`OPTION NV_`, which is the case it could not previously see.

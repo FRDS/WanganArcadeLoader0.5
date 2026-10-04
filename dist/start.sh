@@ -20,23 +20,15 @@ if [ -f ./libso/libz.so.1 ]; then
 	mv ./libso/libz.so.1 ./libso/libz.so.1.bak
 fi
 
-# Recompile shaders for non-nvidia cards
-if [ ! -f ./data/shader/.recompiled ]; then
-	touch ./data/shader/.recompiled
-	for f in ./data/shader/*.cg; do
-		file=${f%.cg}
-		fp="${file}.fp"
-		vp="${file}.vp"
-		if [ -f $fp ]; then
-			rm $fp
-		fi
-		if [ -f $vp ]; then
-			rm $vp
-		fi
-		cgc -profile arbfp1 $f -entry p_main -o $fp
-		cgc -profile arbvp1 $f -entry v_main -o $vp
-	done
-fi
+# Shaders are handled by the loader now (src/shader.rs), which checks whether
+# this driver can run the ones the dump shipped and only replaces them if it
+# can't. It uses the compiler inside libCg.so, which ships beside this script,
+# so cgc does not need to be installed.
+#
+# The block that used to be here needed cgc, and was destructive: it wrote
+# .recompiled before doing any work and deleted every .fp/.vp with no backup,
+# so a single run without cgc left the game with no shaders at all and then
+# permanently skipped the retry.
 
 # Fix a dump with broken soft links
 for f in ./libso/*; do

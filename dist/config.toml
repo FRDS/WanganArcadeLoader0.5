@@ -26,6 +26,18 @@ cg_log = false
 file_log = false
 gl_debug = false
 
+# What to do about the dump's shaders, which ship compiled for NVIDIA only.
+# The loader checks, before the game reads them, whether this driver has the
+# extensions they ask for; if it doesn't, it keeps the originals as *.orig and
+# compiles portable replacements from the .cg sources.
+#
+#   auto      check the driver and do whichever is right (the default)
+#   portable  always compile portable ARB, even on NVIDIA
+#   original  never touch data/shader -- expect a black world on most GPUs
+#
+# Only set this if your driver reports support it doesn't honour.
+shader_mode = "auto"
+
 # Map a path the game asks for onto a real file. Needed on Windows when the
 # game uses an absolute Linux path: LINE passes those through unchanged and
 # confines the game to its own folder, so they fail. Keep entries at the end --

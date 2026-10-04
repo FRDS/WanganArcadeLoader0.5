@@ -16,6 +16,20 @@ pub mod poll;
 pub mod res;
 pub mod shader;
 
+/// What to do about `data/shader`. `Auto` asks the driver whether it can run
+/// the shipped programs and only replaces them if it can't; the other two are
+/// escape hatches for a driver that misreports what it supports.
+#[derive(serde::Deserialize, Clone, Copy, PartialEq, Eq, Debug, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum ShaderMode {
+	#[default]
+	Auto,
+	/// Always recompile to portable ARB.
+	Portable,
+	/// Never touch the files, whatever the driver reports.
+	Original,
+}
+
 #[derive(serde::Deserialize)]
 pub struct FileRedirect {
 	from: String,
@@ -61,6 +75,9 @@ pub struct Config {
 	/// world is drawn with fixed-function and multitexture state, not Cg, so
 	/// this is the only account of why it might come out wrong.
 	gl_debug: bool,
+
+	/// How to handle the dump's NVIDIA-only shaders. See `shader.rs`.
+	shader_mode: ShaderMode,
 }
 
 impl Default for Config {
@@ -88,6 +105,7 @@ const fn default_config() -> Config {
 		cg_log: false,
 		file_log: false,
 		gl_debug: false,
+		shader_mode: ShaderMode::Auto,
 	}
 }
 
@@ -431,7 +449,7 @@ pub(crate) unsafe fn init() {
 
 	platform::init();
 	// Before the engine reads them, so the fixed files are the ones it loads.
-	shader::ensure_portable();
+	shader::ensure_portable(CONFIG.shader_mode);
 
 	hook::hook_symbol("hasp_cleanup", undachi as *const ());
 	hook::hook_symbol("hasp_decrypt", undachi as *const ());

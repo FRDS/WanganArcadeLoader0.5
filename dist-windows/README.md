@@ -106,6 +106,14 @@ on Windows:
   uses this. `0` turns the cap off.
 - `fullscreen = true` is borderless at your monitor's resolution; the game's
   `width` × `height` image is scaled to fit.
+- `shader_mode` (default `auto`): the dump's shaders ship compiled for NVIDIA
+  only. Before the game reads them, the loader asks your driver whether it has
+  the extensions they need; if it doesn't, it keeps the originals as `*.orig`
+  and compiles portable replacements from the `.cg` sources. On an NVIDIA GPU
+  the originals are left in place, because they're the better ones. Set
+  `portable` to always convert, or `original` to never touch the files — only
+  worth doing if your driver reports support it doesn't honour. Whatever it
+  decides, it says so in `wal_3dxp.log`.
 - Networking stays off unless `local_ip` is set.
 - The `plugins/` folder isn't supported on Windows yet.
 

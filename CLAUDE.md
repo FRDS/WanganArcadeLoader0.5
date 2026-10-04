@@ -172,9 +172,21 @@ numbers.
   and friends, and rescales the minimap viewport and perspective FOV.
 - `card.rs` — emulates the magnetic card printer against `card.bin`.
 - `al.rs` — redirects 69 OpenAL entry points to the system OpenAL.
-- `shader.rs` — recompiles `data/shader/*.cg` to portable ARB at startup when
-  it finds NVIDIA-only programs, using the Cg compiler inside
-  `cg.dll`/`libCg.so`. Runs before the engine reads them. See the gotcha below.
+- `shader.rs` — makes `data/shader` suit the machine before the engine reads
+  it. Each compiled program declares what it needs in its own `OPTION NV_*;`
+  directives, so the required extension is *derived* (`OPTION
+  NV_fragment_program2;` → `GL_NV_fragment_program2`) and put to the driver
+  through a throwaway invisible GLFW window — GLFW is reference counted, so
+  this leaves `adm.rs` free to initialise its own later. Only if the driver
+  is missing something does it keep the originals as `*.orig` and recompile
+  the `.cg` sources to `arbvp1`/`arbfp1` with the compiler inside
+  `cg.dll`/`libCg.so`. On an NVIDIA GPU the shipped programs are left alone,
+  since `fp40`/`vp40` are the better ones; the `.orig` copies are even put
+  back if a folder recompiled elsewhere later runs on one. **Every uncertain
+  path recompiles** — portable ARB works everywhere, so an inconclusive probe
+  must never risk the black world. `decide()` takes the probe as a parameter
+  so the whole table is unit-tested; `shader_mode` in `config.toml` overrides
+  it. See the gotcha below.
 - `vendor/retour/` — the upstream `retour` fork with one change: its `win64`
   function-pointer impls are now `#[cfg(target_arch = "x86_64")]`, because
   current rustc rejects that ABI on 32-bit. Patched in via `[patch]` in
@@ -219,12 +231,15 @@ numbers.
   `fopen64` currently refuses to hook, so a little file activity is invisible.
 - **The dump's shaders are NVIDIA-only.** `data/shader/*.fp`/`*.vp` ship
   compiled for `vp40`/`fp40` with `OPTION NV_vertex_program3` and `BB1:`
-  labels. Every other driver rejects all of them — `GL_INVALID_OPERATION in
-  ProgramStringARB`, "syntax error near 'BB1'" — and because draws with no
-  valid program bound fail too, **the 3D world renders black while the HUD
-  looks perfect and the game reports nothing.** `shader.rs` fixes this
-  automatically now; the symptom is worth recognising because nothing in the
-  game's own output points at it.
+  labels. A driver without the matching `GL_NV_*` extensions rejects all of
+  them — `GL_INVALID_OPERATION in ProgramStringARB`, "syntax error near
+  'BB1'" — and because draws with no valid program bound fail too, **the 3D
+  world renders black while the HUD looks perfect and the game reports
+  nothing.** `shader.rs` handles this automatically now, and only when the
+  driver actually needs it; the symptom is worth recognising because nothing
+  in the game's own output points at it. Note the files carry an `!!ARBfp1.0`
+  header *and* an `OPTION NV_` line, so the header tells you nothing — the
+  `OPTION` directives are the discriminator.
 - **The game's own diagnostics do not exist.** `alchemy.ini`'s
   `printCompiledShaders` and `defaultReportLevel` are marked "Debug only" and
   are compiled out of the `Static/Release` build it ships as, so turning them
