@@ -263,6 +263,15 @@ numbers.
   this is what found the shader bug). Anything logged per-frame or per-draw
   **must be deduplicated**: an early `gl_debug` build without it produced a
   70 MB log in a single run.
+- **Frame rate is game speed.** The engine advances one simulation step per
+  frame drawn, so anything that changes the frame rate changes how fast the
+  game plays — observed directly: holding the rate below 60 made the game run
+  slow in menus as well as in a race. `fps_limit` is therefore a speed
+  control, not a performance knob, and 60 is the rate the arcade hardware ran
+  at rather than a preference. `vsync` can override it downward, because a
+  display that cannot hold 60 paces the swap. This is the context for every
+  pacing decision in `adm.rs`, and the reason `limit_fps()` must not be
+  weakened: rendering faster is not a free win, it is a bug.
 - **ARM is not a target.** The game is 32-bit x86 and this code rewrites its
   machine code; run the x86 build under emulation instead.
 

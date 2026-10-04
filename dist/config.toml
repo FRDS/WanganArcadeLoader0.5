@@ -7,9 +7,14 @@ dongle = "285013501138"
 # 1% deadzone
 deadzone = 0.01
 
-# Wait for the display's refresh before swapping frames. Turn this off when
-# the display is virtual -- an RDP session presents at about 30Hz, which halves
-# the frame rate in menus as well as in a race -- and let fps_limit pace it.
+# The game takes one step of its simulation per frame drawn, so the frame rate
+# is also how fast the game plays. 60 is the rate the arcade hardware ran at,
+# and fps_limit below is what holds it there -- it is a speed setting, not a
+# performance one. Raising it makes the game run fast.
+#
+# vsync waits for the display's refresh before swapping. Leave it on for any
+# display that can hold 60. Turn it off on one that cannot, so fps_limit paces
+# the game rather than the display dragging it below 60 and slowing it down.
 vsync = true
 
 width = 640

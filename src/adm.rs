@@ -237,10 +237,10 @@ unsafe extern "C" fn adm_window() -> *mut AdmWindow {
 	GLFW_WINDOW = window.window_ptr();
 	window.make_current();
 	window.set_resizable(true);
-	// Vsync locks us to the display's refresh, which is the right default on a
-	// real monitor and wrong on a virtual one: an RDP session presents at
-	// around 30Hz, so the game runs at 30 in the menus as well as in a race,
-	// and fps_limit never gets a say because the frames already take 33ms.
+	// The engine advances one simulation step per frame, so the swap interval
+	// decides how fast the game plays, not just how smooth it looks. Vsync is
+	// right on any display that holds 60; turn it off on one that cannot, so
+	// fps_limit paces the game instead of the display dragging it under.
 	glfw.set_swap_interval(if CONFIG.vsync {
 		SwapInterval::Sync(1)
 	} else {
@@ -398,12 +398,13 @@ static mut RATE_SINCE: Option<std::time::Instant> = None;
 
 /// Reports the frame rate actually achieved, once every five seconds.
 ///
-/// Users report frame rates by eye ("feels like 30"), and the two things that
-/// cap it -- vsync following the display and `fps_limit` -- are invisible from
-/// outside. A remote session is the awkward case: its virtual display can
-/// present at about 30Hz, so vsync halves the rate in menus as well as in a
-/// race. Five seconds keeps this to a dozen lines a minute, which is well
-/// inside the rule that nothing per-frame may log per-frame.
+/// Because the engine takes one simulation step per frame, this is the game's
+/// speed and not merely its smoothness, which makes it worth stating rather
+/// than estimating by eye. The two things that cap it -- vsync following the
+/// display, and `fps_limit` -- are both invisible from outside.
+///
+/// Five seconds keeps this to a dozen lines a minute, well inside the rule
+/// that nothing on the per-frame path may log per frame.
 unsafe fn report_fps() {
 	use std::time::{Duration, Instant};
 	const EVERY: Duration = Duration::from_secs(5);

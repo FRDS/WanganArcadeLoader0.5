@@ -53,13 +53,15 @@ pub struct Config {
 
 	file_redirect: Option<Vec<FileRedirect>>,
 
-	/// Wait for the display's refresh before swapping. Turn off when the
-	/// display is virtual -- over RDP it presents at about 30Hz and halves the
-	/// frame rate -- and let fps_limit do the pacing instead.
+	/// Wait for the display's refresh before swapping. Right on any display
+	/// that holds 60; turn it off on one that cannot, since the frame rate is
+	/// the game's speed, and let fps_limit do the pacing instead.
 	vsync: bool,
 
-	/// Frames per second cap, 0 for none. Linux usually caps with MangoHUD
-	/// (see start.sh), so the default is 60 only on Windows.
+	/// Frames per second cap, 0 for none. **This sets the game's speed**: the
+	/// engine takes one simulation step per frame, so 60 is not a preference
+	/// but the rate the arcade hardware ran at. Linux usually caps with
+	/// MangoHUD (see start.sh), so the default is 60 only on Windows.
 	fps_limit: u32,
 
 	/// Log controllers and every input to find binding names (see keyconfig.toml).

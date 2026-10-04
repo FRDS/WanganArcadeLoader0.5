@@ -52,15 +52,27 @@ Also proven, 2026-10-04/05:
   Note the `NvOptimusEnablement` export from our DLL did **not** achieve
   this — the per-application setting did.
 
-Still unverified: steering wheels and pedals, audio, a full race to
-completion, and anything on Linux since the input rewrite (Linux is
-compile-only by decision — the GLFW keyboard switch and the SDL 0.38 bump are
-untested there).
+- **Audio works**, on every machine and every test since we began shipping
+  our own `soft_oal.dll` (OpenAL Soft 1.23.1, cross-built in CI).
+
+Still unverified: steering wheels and pedals, a full race to completion, and
+anything on Linux since the input rewrite (Linux is compile-only by decision
+— the GLFW keyboard switch and the SDL 0.38 bump are untested there).
 
 ## Decisions already made
 
 - **Rust, one codebase**, not a C++ fork. The archived C++ port
   (`axylol/line-wal0.5`) is the reference for LINE mechanics only.
+- **60fps is not negotiable.** The engine takes one simulation step per frame
+  drawn, so the frame rate is the game's speed — holding it below 60 visibly
+  slowed the game, and raising it speeds the game up by the same factor.
+  Rendering at a monitor's higher refresh would mean synthesising
+  intermediate simulation states, which is not reachable from the OpenGL and
+  ADM boundary we patch in a closed 2008 engine; presenting duplicate frames
+  would be indistinguishable from 60 on a fixed-refresh panel. Anyone wanting
+  higher-refresh motion should use an external frame generator with the game
+  left at 60. `fps_limit` is the speed control and `limit_fps()` must not be
+  weakened.
 - **Windows-only testing**; Linux gets CI compile checks.
 - **GLFW keyboard on both platforms** (drops `x11`, `device_query`).
 - **Widescreen was deferred**, on the grounds that it lives inside tattoohanz's
