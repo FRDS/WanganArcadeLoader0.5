@@ -174,7 +174,10 @@ unsafe fn log_gl_info() {
 		"GL_ARB_multitexture",
 	] {
 		let present = extensions.split_whitespace().any(|have| have == name);
-		platform::log(&format!("GL {name}: {}", if present { "yes" } else { "NO" }));
+		platform::log(&format!(
+			"GL {name}: {}",
+			if present { "yes" } else { "NO" }
+		));
 	}
 
 	if CONFIG.gl_debug {
@@ -243,6 +246,17 @@ unsafe extern "C" fn adm_window() -> *mut AdmWindow {
 	} else {
 		SwapInterval::None
 	});
+	// Both of these are invisible from outside, and between them they decide
+	// the frame rate, so say which is in force rather than leave it to be
+	// guessed at from how the game feels.
+	platform::log(&format!(
+		"adm: vsync {}, fps_limit {}",
+		if CONFIG.vsync { "on" } else { "off" },
+		match CONFIG.fps_limit {
+			0 => "off".to_string(),
+			n => n.to_string(),
+		}
+	));
 
 	opengl::load_gl_funcs(&glfw);
 	gl::load_with(|s| glfw.get_proc_address_raw(s));
@@ -367,6 +381,7 @@ unsafe extern "C" fn adm_swap_buffers(window_ptr: *mut AdmWindow) -> c_int {
 	}
 
 	limit_fps();
+	report_fps();
 	window.window.swap_buffers();
 	window.glfw.poll_events();
 	if window.window.should_close() {
@@ -376,6 +391,37 @@ unsafe extern "C" fn adm_swap_buffers(window_ptr: *mut AdmWindow) -> c_int {
 	}
 
 	0
+}
+
+static mut FRAME_COUNT: u32 = 0;
+static mut RATE_SINCE: Option<std::time::Instant> = None;
+
+/// Reports the frame rate actually achieved, once every five seconds.
+///
+/// Users report frame rates by eye ("feels like 30"), and the two things that
+/// cap it -- vsync following the display and `fps_limit` -- are invisible from
+/// outside. A remote session is the awkward case: its virtual display can
+/// present at about 30Hz, so vsync halves the rate in menus as well as in a
+/// race. Five seconds keeps this to a dozen lines a minute, which is well
+/// inside the rule that nothing per-frame may log per-frame.
+unsafe fn report_fps() {
+	use std::time::{Duration, Instant};
+	const EVERY: Duration = Duration::from_secs(5);
+
+	let now = Instant::now();
+	let since = *RATE_SINCE.get_or_insert(now);
+	FRAME_COUNT += 1;
+	let elapsed = now - since;
+	if elapsed < EVERY {
+		return;
+	}
+	let fps = FRAME_COUNT as f64 / elapsed.as_secs_f64();
+	platform::log(&format!(
+		"adm: {fps:.1} fps over the last {:.0}s",
+		elapsed.as_secs_f64()
+	));
+	FRAME_COUNT = 0;
+	RATE_SINCE = Some(now);
 }
 
 static mut NEXT_FRAME: Option<std::time::Instant> = None;
