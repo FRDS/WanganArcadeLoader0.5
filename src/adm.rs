@@ -429,6 +429,22 @@ unsafe extern "C" fn adm_swap_buffers(window_ptr: *mut AdmWindow) -> c_int {
 			));
 		}
 
+		// Clearing once at creation only covers rows we never reach at all.
+		// Shrink the window mid-run and the rows we stop reaching are already
+		// holding a valid frame, which then freezes across the top for the
+		// rest of the session. Clear when the captured region changes, so
+		// they go black instead -- once per change, not per frame. The game
+		// owns the clear colour, so borrow it and put it back.
+		if (captured_width, captured_height) != LAST_CAPTURED {
+			LAST_CAPTURED = (captured_width, captured_height);
+			let mut previous = [0.0f32; 4];
+			gl::GetFloatv(gl::COLOR_CLEAR_VALUE, previous.as_mut_ptr());
+			gl::BindFramebuffer(gl::FRAMEBUFFER, window.fbo);
+			gl::ClearColor(0.0, 0.0, 0.0, 1.0);
+			gl::Clear(gl::COLOR_BUFFER_BIT);
+			gl::ClearColor(previous[0], previous[1], previous[2], previous[3]);
+		}
+
 		let (viewport_width, viewport_height, viewport_x, viewport_y) = if window_ar > ar {
 			let viewport_width: i32 = ((window_height as f32) * ar) as i32;
 			let viewport_x = ((window_width - viewport_width) as f32 / 2.0) as i32;
@@ -521,6 +537,7 @@ unsafe fn report_fps() {
 }
 
 static mut SIZE_WARNED: bool = false;
+static mut LAST_CAPTURED: (i32, i32) = (0, 0);
 
 static mut NEXT_FRAME: Option<std::time::Instant> = None;
 
