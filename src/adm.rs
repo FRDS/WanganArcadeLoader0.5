@@ -234,7 +234,15 @@ unsafe extern "C" fn adm_window() -> *mut AdmWindow {
 	GLFW_WINDOW = window.window_ptr();
 	window.make_current();
 	window.set_resizable(true);
-	glfw.set_swap_interval(SwapInterval::Sync(1));
+	// Vsync locks us to the display's refresh, which is the right default on a
+	// real monitor and wrong on a virtual one: an RDP session presents at
+	// around 30Hz, so the game runs at 30 in the menus as well as in a race,
+	// and fps_limit never gets a say because the frames already take 33ms.
+	glfw.set_swap_interval(if CONFIG.vsync {
+		SwapInterval::Sync(1)
+	} else {
+		SwapInterval::None
+	});
 
 	opengl::load_gl_funcs(&glfw);
 	gl::load_with(|s| glfw.get_proc_address_raw(s));

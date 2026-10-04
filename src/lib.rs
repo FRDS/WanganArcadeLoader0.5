@@ -53,6 +53,11 @@ pub struct Config {
 
 	file_redirect: Option<Vec<FileRedirect>>,
 
+	/// Wait for the display's refresh before swapping. Turn off when the
+	/// display is virtual -- over RDP it presents at about 30Hz and halves the
+	/// frame rate -- and let fps_limit do the pacing instead.
+	vsync: bool,
+
 	/// Frames per second cap, 0 for none. Linux usually caps with MangoHUD
 	/// (see start.sh), so the default is 60 only on Windows.
 	fps_limit: u32,
@@ -100,6 +105,7 @@ const fn default_config() -> Config {
 		width: 640,
 		height: 480,
 		file_redirect: None,
+		vsync: true,
 		fps_limit: if cfg!(windows) { 60 } else { 0 },
 		input_log: false,
 		cg_log: false,

@@ -21,18 +21,11 @@ rem Dumps copied from Linux often turn symlinks into empty files, which LINE
 rem can't load. Copy the real library over each one.
 if exist "fix-libso.ps1" powershell -NoProfile -ExecutionPolicy Bypass -File "fix-libso.ps1"
 
-if exist "data\shader\.recompiled" goto shaders_done
-where cgc >nul 2>&1 || goto shaders_skipped
-echo [start] Recompiling shaders to arbfp1/arbvp1, originals kept as *.orig
-for %%S in ("data\shader\*.cg") do call :compile_shader "%%~nS"
-type nul > "data\shader\.recompiled"
-goto shaders_done
-:shaders_skipped
-echo [start] WARNING: cgc not found, so the shaders were NOT recompiled.
-echo [start] The game ships them built for NVIDIA. On any other GPU every shader
-echo [start] is rejected and the world renders BLACK while the HUD looks fine.
-echo [start] Install the NVIDIA Cg Toolkit 3.1 so cgc is on PATH, then run again.
-:shaders_done
+rem Shaders are handled by the loader now (src/shader.rs). It asks the driver
+rem whether it can run the programs the dump shipped and only replaces them if
+rem it can't, using the compiler inside cg.dll -- so cgc need not be installed,
+rem and an NVIDIA GPU keeps the better fp40/vp40 programs instead of being
+rem downgraded to ARB behind the loader's back.
 
 set "LC_ALL=C"
 set "LINE_EXECUTABLE=main"
@@ -50,12 +43,4 @@ echo [start] Running the game. Console output goes to line_console.log, loader m
 line.exe > "line_console.log" 2>&1
 echo [start] line.exe exited with code %ERRORLEVEL%
 if exist "line.exe.stackdump" echo [start] line.exe crashed. Send wal_3dxp.log, line_console.log and line.exe.stackdump.
-exit /b 0
-
-:compile_shader
-set "WAL_SHADER=data\shader\%~1"
-if exist "%WAL_SHADER%.fp" if not exist "%WAL_SHADER%.fp.orig" copy /y "%WAL_SHADER%.fp" "%WAL_SHADER%.fp.orig" >nul
-if exist "%WAL_SHADER%.vp" if not exist "%WAL_SHADER%.vp.orig" copy /y "%WAL_SHADER%.vp" "%WAL_SHADER%.vp.orig" >nul
-cgc -profile arbfp1 "%WAL_SHADER%.cg" -entry p_main -o "%WAL_SHADER%.fp" >nul
-cgc -profile arbvp1 "%WAL_SHADER%.cg" -entry v_main -o "%WAL_SHADER%.vp" >nul
 exit /b 0

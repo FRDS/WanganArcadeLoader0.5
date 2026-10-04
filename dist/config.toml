@@ -7,6 +7,11 @@ dongle = "285013501138"
 # 1% deadzone
 deadzone = 0.01
 
+# Wait for the display's refresh before swapping frames. Turn this off when
+# the display is virtual -- an RDP session presents at about 30Hz, which halves
+# the frame rate in menus as well as in a race -- and let fps_limit pace it.
+vsync = true
+
 width = 640
 height = 480
 
