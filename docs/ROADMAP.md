@@ -23,14 +23,31 @@ LINE's plugin.
 | P6 Gemballa unlock | not started, fully researched below |
 | P7 network / localhost split-screen | not started |
 
-Proven on hardware (Export 3DX+ dump, Intel Iris Xe): boots through LINE with
-47/47 hooks resolved, reaches `admCreateWindowi`, renders menus and a lit 3D
-world, and plays a race. Stack alignment, LINE's hook table, symbol lookup and
-Rust std all work.
+Proven on hardware (Export 3DX+ dump): boots through LINE with 47/47 hooks
+resolved, reaches `admCreateWindowi`, renders menus and a lit 3D world, and
+plays a race. Stack alignment, LINE's hook table, symbol lookup and Rust std
+all work. Confirmed on **Intel Iris Xe** and **Intel UHD**, the latter on a
+hybrid laptop beside an RTX 2070 Max-Q.
 
-Still unverified: steering wheels and pedals, audio, a full race to completion,
-and anything on Linux since the input rewrite (Linux is compile-only by
-decision — the GLFW keyboard switch and the SDL 0.38 bump are untested there).
+Also proven, 2026-10-04/05:
+
+- The bundle runs with nothing fetched by hand — our own `line.exe`,
+  `soft_oal.dll` and the Cg runtime.
+- The shader capability probe works under LINE. It creates a GL context at
+  `init()`, before the game has one, and leaves GLFW for `adm.rs` to
+  initialise afterwards.
+- **The Cg compiler inside `cg.dll` is equivalent to standalone `cgc`.** All
+  38 programs of a clean dump compile byte-identically to cgc 3.1.0013's
+  output (615 instruction lines each side); only the `# command line args`
+  comment differs. So `shader.rs` needs no toolkit install and gives up
+  nothing by not having one.
+
+Still unverified: steering wheels and pedals, audio, a full race to
+completion, whether the probe and the game agree on which GPU they see when a
+discrete card is in play (the reason `.orig` restore is advisory rather than
+automatic), and anything on Linux since the input rewrite (Linux is
+compile-only by decision — the GLFW keyboard switch and the SDL 0.38 bump are
+untested there).
 
 ## Decisions already made
 
