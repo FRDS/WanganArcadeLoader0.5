@@ -13,6 +13,8 @@ From this package:
 - `wal_3dxp.dll`, `start.bat`, `fix-libso.ps1`
 - `soft_oal.dll` — OpenAL Soft 1.23.1, cross-compiled by our CI and
   self-contained; see `licenses/openal-soft/`
+- `cg.dll`, `cgGL.dll` — the NVIDIA Cg Toolkit 3.1 runtime, redistributed
+  unmodified; see `licenses/cg-toolkit/`
 - `config.toml`, `keyconfig.toml`, `gamecontrollerdb.txt`
 - `data/config.lua` (replaces the game's own; back that up first)
 - `tmp/`
@@ -29,12 +31,16 @@ Also in the `dist-windows-bundle` download:
   *same* 32-bit MSYS2 install: 64-bit ones fail with `0xc000007b`, and the
   giveaway is `msys-gcc_s-seh-1.dll` in place of `msys-gcc_s-1.dll`.
 
-From elsewhere — the only thing left to fetch yourself, both **32-bit**:
+**Nothing else to fetch.** Everything the loader and the game need beyond
+your own dump is in this package.
 
-- `cg.dll`, `cgGL.dll` from the NVIDIA Cg Toolkit 3.1, from its `bin` folder
-  (not `bin.x64`). These are NVIDIA-proprietary and can't be redistributed,
-  so they stay a manual step. The game needs Cg at run time, and `shader.rs`
-  uses the compiler inside `cg.dll` to fix the dump's NVIDIA-only shaders.
+Why Cg is here: the game `dlopen`s `libCg.so` and `libCgGL.so` itself and
+cannot start without them, so no amount of shader work removes the
+requirement. `shader.rs` also borrows the Cg compiler that lives inside
+`cg.dll` to fix the dump's NVIDIA-only shaders. NVIDIA's licence permits
+redistributing the Cg binaries as long as they are unmodified, which is why
+they are not stripped. Cg is proprietary — it is the one piece here that
+isn't free software.
 
 ## Running
 
@@ -136,4 +142,14 @@ commit in `SOURCE.txt`.
 It is unmodified, and the loader opens it by filename at run time, so you can
 substitute your own build of it without rebuilding anything else.
 
-`cg.dll` and `cgGL.dll` are NVIDIA's and are not included.
+`cg.dll` and `cgGL.dll` are NVIDIA's Cg Toolkit 3.1, included unmodified
+under the terms in `licenses/cg-toolkit/LICENSE.txt`:
+
+> No Modification. The SOFTWARE may be redistributed providing that
+> distributed Cg compiler and runtime binaries are unmodified, except for
+> decompression and compression.
+
+Cg is proprietary and its source is not available, so this package as a whole
+is not all-free-software — worth knowing if you repackage it. Debian ships
+the same toolkit in its `non-free` area. `licenses/cg-toolkit/SOURCE.txt`
+records which installer and which files they came from.

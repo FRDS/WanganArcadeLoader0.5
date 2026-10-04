@@ -64,12 +64,28 @@ how far we can go:
 | `wal_3dxp.dll` | cross-built from Ubuntu in ~15 s, imports only stock Windows DLLs |
 | `line.exe` + `msys-2.0.dll`, `msys-gcc_s-1.dll`, `msys-stdc++-6.dll` | built by the `line` CI job, bundled |
 | `soft_oal.dll` | cross-built with mingw-w64 in the `windows` job, bundled |
-| `cg.dll`, `cgGL.dll` | external, permanently — NVIDIA-proprietary, not redistributable |
+| `cg.dll`, `cgGL.dll` | extracted from the Cg Toolkit 3.1 installer, bundled unmodified |
 
-`cg.dll`/`cgGL.dll` are the only files a user still has to find. Everything
-else in a release is built from pinned source by our own CI.
+**A release is now self-contained**: a user supplies only their own dump.
 
-OpenAL Soft was not a new dependency when the Windows build picked it up:
+Two things decided along the way, so they are not relitigated:
+
+- **Precompiled "universal" shaders cannot replace Cg.** The game `dlopen`s
+  `libCg.so` *and* `libCgGL.so` and calls `cgCreateProgram`,
+  `cgGLLoadProgram` and `cgGLGetLatestProfile` itself; `cgGL` contains no
+  compiler and our loader never loads it. The runtime is needed to load a
+  shader in *any* format. Separately, shipping converted `.fp`/`.vp` would
+  mean redistributing derivatives of the game's own `.cg` sources, which is
+  the line this project holds everywhere else.
+- **Cg may be redistributed.** An earlier note here claimed otherwise; that
+  was wrong. NVIDIA's licence: "The SOFTWARE may be redistributed providing
+  that distributed Cg compiler and runtime binaries are unmodified, except
+  for decompression and compression." Debian ships it in `non-free` on the
+  same basis. Consequence to keep in mind: the release is no longer
+  all-free-software, and the Cg binaries must never be stripped.
+
+OpenAL Soft was likewise not a new dependency when the Windows build picked it
+up:
 upstream's `build` job has compiled it from source and shipped it as
 `libopenal.so` since before this fork, and the archived C++ LINE port already
 opened `soft_oal.dll` by that name (`al.cpp`, `dlopen`). Windows was simply

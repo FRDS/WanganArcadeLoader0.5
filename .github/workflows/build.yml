@@ -56,6 +56,26 @@ jobs:
         strip libopenal.so.1.23.1
         cd ../..
         mv openal-soft/build/libopenal.so.1.23.1 out/libopenal.so
+
+        # The game dlopens libCg.so and libCgGL.so itself and cannot start
+        # without them, and shader.rs borrows the compiler inside libCg.so.
+        # NVIDIA's licence allows redistribution of *unmodified* Cg binaries,
+        # so unlike libopenal.so above these are deliberately NOT stripped.
+        curl -sSL -o cg.tgz https://developer.download.nvidia.com/cg/Cg_3.1/Cg-3.1_April2012_x86.tgz
+        echo 'cef3591e436f528852db0e8c145d3842f920e0c89bcfb219c466797cb7b18879  cg.tgz' | sha256sum -c -
+        mkdir -p cg-raw
+        # usr/lib holds the real pair; usr/local/Cg/examples/Trace has decoy
+        # copies of the same names, so extract only the paths we want.
+        tar xzf cg.tgz -C cg-raw ./usr/lib/libCg.so ./usr/lib/libCgGL.so ./usr/local/Cg/docs/license.txt
+        for so in libCg.so libCgGL.so; do
+          file -b "cg-raw/usr/lib/$so"
+          file -b "cg-raw/usr/lib/$so" | grep -q 'ELF 32-bit LSB shared object, Intel 80386' \
+            || { echo "$so is not 32-bit x86"; exit 1; }
+          cp "cg-raw/usr/lib/$so" out/
+        done
+        mkdir -p out/licenses/cg-toolkit
+        cp cg-raw/usr/local/Cg/docs/license.txt out/licenses/cg-toolkit/LICENSE.txt
+        test -s out/licenses/cg-toolkit/LICENSE.txt
     - uses: actions/upload-artifact@v4
       with:
         name: dist
@@ -74,6 +94,8 @@ jobs:
         sudo apt-get update
         sudo apt-get install -y gcc-mingw-w64-i686 g++-mingw-w64-i686 cmake
         sudo apt-get install -y --no-install-recommends wine32:i386 wine
+        # The Cg Toolkit installer is Inno Setup 5.3.10; p7zip cannot open it.
+        sudo apt-get install -y --no-install-recommends innoextract
         rustup target add i686-pc-windows-gnu
         rustup component add clippy
 
@@ -203,6 +225,77 @@ jobs:
         fi
         echo "all $(echo "$want" | wc -l) entry points al.rs redirects are exported"
 
+    # The game itself dlopens libCg.so/libCgGL.so -- OnDlOpen maps those to
+    # cg.dll/cgGL.dll -- so the Cg runtime is mandatory no matter what is in
+    # data/shader. shader.rs additionally borrows the compiler inside cg.dll.
+    # NVIDIA's licence permits this: "The SOFTWARE may be redistributed
+    # providing that distributed Cg compiler and runtime binaries are
+    # unmodified, except for decompression and compression." Debian ships it
+    # in non-free on the same basis.
+    - name: Restore Cg runtime
+      id: cg
+      uses: actions/cache@v4
+      with:
+        path: cg-out
+        key: cg-3.1-april2012-win32-v1
+
+    - name: Extract the Cg runtime
+      if: steps.cg.outputs.cache-hit != 'true'
+      run: |
+        set -euo pipefail
+        # Note the hyphen: Cg_3.1_April2012_Setup.exe (underscore) 404s.
+        url=https://developer.download.nvidia.com/cg/Cg_3.1/Cg-3.1_April2012_Setup.exe
+        want=0039b4a3d6f2d4c57eebe11e425ddb73d0b74ac917848fd97821a3a5b776ba31
+        curl -sSL -o cg-setup.exe "$url"
+        got=$(sha256sum cg-setup.exe | cut -d' ' -f1)
+        echo "installer sha256 = $got"
+        [ "$got" = "$want" ] || { echo "installer hash mismatch, expected $want"; exit 1; }
+
+        # Inno Setup, so innoextract rather than 7z, and -I because the
+        # installer holds 2393 files. bin/ is 32-bit; bin.x64/ must not be
+        # touched -- that is the same trap as the 64-bit MSYS2 runtime.
+        innoextract -e -d cg-raw \
+          -I app/bin/cg.dll -I app/bin/cgGL.dll -I app/docs/license.txt cg-setup.exe
+        mkdir -p cg-out
+        # Flatten, and deliberately NOT strip: stripping would modify the
+        # binaries and void the redistribution grant quoted above.
+        cp cg-raw/app/bin/cg.dll cg-raw/app/bin/cgGL.dll cg-out/
+        cp cg-raw/app/docs/license.txt cg-out/LICENSE.txt
+        cat > cg-out/SOURCE.txt <<'EOF'
+        NVIDIA Cg Toolkit 3.1 (April 2012), redistributed unmodified.
+
+          source      https://developer.download.nvidia.com/cg/Cg_3.1/
+          installer   Cg-3.1_April2012_Setup.exe
+          files       app/bin/cg.dll, app/bin/cgGL.dll (32-bit), app/docs/license.txt
+          licence     LICENSE.txt -- see the "No Modification" clause
+
+        cg.dll and cgGL.dll are byte-for-byte as shipped by NVIDIA. They are
+        not stripped, because the licence permits redistribution only of
+        unmodified binaries. Cg is proprietary; it is the one component here
+        that is not free software, and it is included because the game loads
+        it itself and cannot start without it.
+        EOF
+
+    # Runs on a cache hit too, so a restored copy is validated as well.
+    - name: Check the Cg runtime
+      run: |
+        set -euo pipefail
+        for f in cg-out/cg.dll cg-out/cgGL.dll cg-out/LICENSE.txt cg-out/SOURCE.txt; do
+          test -s "$f" || { echo "missing or empty $f"; exit 1; }
+        done
+        # bin.x64 would be PE32+ x86-64. These must be the 32-bit pair, and
+        # must match what NVIDIA shipped -- any drift means we either took the
+        # wrong directory or modified the files.
+        for f in cg-out/cg.dll cg-out/cgGL.dll; do
+          file -b "$f"
+          file -b "$f" | grep -q 'PE32 executable (DLL).*Intel 80386' || { echo "$f is not 32-bit x86"; exit 1; }
+        done
+        sha256sum -c - <<'EOF'
+        d7c5eadbcad39cbb2e6a3ec839d747bf85f3470cf07c9e5c9873546bd6197b2e  cg-out/cg.dll
+        ff07f5bf56490ee932aacbe3c6a9a22a60b2275f8dfb5b518f28f502c71361b5  cg-out/cgGL.dll
+        EOF
+        grep -q 'may be redistributed' cg-out/LICENSE.txt || { echo "licence text is not the expected one"; exit 1; }
+
     - name: Package
       run: |
         mkdir -p out
@@ -210,6 +303,9 @@ jobs:
         cp openal-out/soft_oal.dll out/
         mkdir -p out/licenses/openal-soft
         cp openal-out/COPYING.txt openal-out/BSD-3Clause.txt openal-out/SOURCE.txt out/licenses/openal-soft/
+        cp cg-out/cg.dll cg-out/cgGL.dll out/
+        mkdir -p out/licenses/cg-toolkit
+        cp cg-out/LICENSE.txt cg-out/SOURCE.txt out/licenses/cg-toolkit/
         cp -r dist/* out/
         rm out/start.sh
         cp dist-windows/start.bat dist-windows/fix-libso.ps1 dist-windows/README.md out/
@@ -495,9 +591,11 @@ jobs:
         echo "--- bundle contents ---"
         find out -type f | sort
         for f in line.exe msys-2.0.dll msys-gcc_s-1.dll msys-stdc++-6.dll \
-                 wal_3dxp.dll soft_oal.dll start.bat fix-libso.ps1 README.md \
-                 LICENSE.txt config.toml keyconfig.toml gamecontrollerdb.txt \
-                 data/config.lua licenses/line/LICENSE.txt licenses/line/SOURCE.txt; do
+                 wal_3dxp.dll soft_oal.dll cg.dll cgGL.dll \
+                 start.bat fix-libso.ps1 README.md LICENSE.txt \
+                 config.toml keyconfig.toml gamecontrollerdb.txt data/config.lua \
+                 licenses/line/LICENSE.txt licenses/line/SOURCE.txt \
+                 licenses/openal-soft/COPYING.txt licenses/cg-toolkit/LICENSE.txt; do
           test -s "out/$f" || { echo "bundle is missing $f"; exit 1; }
         done
 

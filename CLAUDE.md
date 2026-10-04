@@ -198,6 +198,19 @@ numbers.
   job) and the `dist-windows-bundle` artifact contains them, so this only
   matters if you hand-assemble a folder — but it is still the most common
   setup failure, and the checks in that job exist to keep it out of releases.
+- **Never strip or otherwise modify `cg.dll`/`cgGL.dll`/`libCg.so`/
+  `libCgGL.so`.** We redistribute them under NVIDIA's licence, which permits
+  it *only* for unmodified binaries ("except for decompression and
+  compression"). Both CI sites that handle them say so; the `build` job strips
+  `libopenal.so` right next door, so the exception is easy to "tidy up" by
+  mistake. Doing so would void the redistribution grant.
+- **The game needs the Cg runtime, not just a shader compiler.** It `dlopen`s
+  `libCg.so` *and* `libCgGL.so` and calls `cgCreateProgram`/`cgGLLoadProgram`/
+  `cgGLGetLatestProfile` itself (`OnDlOpen` maps those names to the DLLs).
+  Our loader never touches `cgGL` at all. So no amount of shader
+  pre-compilation removes the dependency — and shipping converted `.fp`/`.vp`
+  would mean redistributing the game's own assets, which this project doesn't
+  do.
 - Formatting is **hard tabs** (`rustfmt.toml`), matching upstream.
 - The Windows build has no `plugins/` support, and `ignore_custom_ioctls` is
   still Linux-only. `file_redirect` now works on both (`windows/files.rs`
@@ -230,9 +243,9 @@ numbers.
 The game folder is `C:\Wangan Midnight Maximum Tune 3DX+ (Export) (2010)`.
 The simplest deploy is to unzip the `dist-windows-bundle` artifact into it:
 that is the `windows` job's output plus the `line` job's `line.exe` and three
-msys DLLs. **Only `cg.dll` and `cgGL.dll` still have to come from elsewhere**,
-because the Cg Toolkit is NVIDIA-proprietary. Then run `start.bat` from that
-folder.
+msys DLLs. **Nothing has to come from elsewhere any more** — the bundle
+carries `line.exe`, the msys runtime, `soft_oal.dll` and the Cg runtime. Then
+run `start.bat` from that folder.
 
 Deploying a locally built DLL means copying it plus `dist/*` (minus
 `start.sh`) and `dist-windows/{start.bat,fix-libso.ps1,README.md}` — exactly
@@ -251,14 +264,17 @@ forked from `vixen256/WanganArcadeLoader0.5` (added as `upstream`). Note that
 
 CI (`.github/workflows/build.yml`) has four jobs:
 
-- `build` — Linux i586; also compiles openal-soft from source, so it is slow.
+- `build` — Linux i586; also compiles openal-soft from source (slow) and
+  unpacks the Cg runtime into `dist`.
 - `windows` — cross-build, DLL export and import checks, a `start.bat` lint,
   and both test suites under Wine. It also cross-builds OpenAL Soft 1.23.1
   with mingw-w64 and ships it as `soft_oal.dll` (the name `al.rs` opens at
   run time; CMake emits `OpenAL32.dll`), cached on the pinned tag. That step
   checks the DLL imports no mingw runtime and still exports every entry point
   `al.rs` patches — `al.rs` panics at startup if one is missing, so a version
-  bump must not drop any.
+  bump must not drop any. It also extracts `cg.dll`/`cgGL.dll` from the Cg
+  Toolkit 3.1 installer with **`innoextract`** — it is Inno Setup 5.3.10, and
+  p7zip cannot open it — taking `app/bin/`, never `app/bin.x64/`.
 - `line` — the only job on a Windows runner. Builds `line.exe` in 32-bit
   MSYS2 from a pinned `axylol/line` commit, because LINE is a Cygwin program
   and cannot be cross-compiled. Its output is cached on the pinned SHA, so
