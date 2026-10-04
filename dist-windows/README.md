@@ -106,10 +106,12 @@ on Windows:
   uses this. `0` turns the cap off.
 - `width` × `height` is the resolution the game renders at. **Windowed, it has
   to fit inside the window's client area.** A window can't be as tall as your
-  display once it has a title bar, so 1080 on a 1080p screen will never fit —
-  anything that doesn't is clipped before it can be drawn. The loader says so
-  in `wal_3dxp.log`; if you once saw a frozen band across the top of the game,
-  that was this.
+  display once it has a title bar, so 1080 on a 1080p screen will never fit,
+  and whatever doesn't fit is clipped before the game can draw it — maximising
+  is the usual way to trip this. What's left is shown undistorted and filling
+  the window rather than padded out, so the result is a quietly cropped
+  picture rather than an obvious one; `wal_3dxp.log` names the number of rows
+  lost. Use fullscreen if you want the whole frame.
 - `fullscreen = true` is borderless at your monitor's current resolution; the
   game's `width` × `height` image is scaled to fit, letterboxed if the aspect
   ratios differ. This is the safe choice, and the one to use for a 4:3 render
