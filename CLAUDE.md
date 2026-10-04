@@ -230,8 +230,9 @@ numbers.
 The game folder is `C:\Wangan Midnight Maximum Tune 3DX+ (Export) (2010)`.
 The simplest deploy is to unzip the `dist-windows-bundle` artifact into it:
 that is the `windows` job's output plus the `line` job's `line.exe` and three
-msys DLLs. Only `cg.dll`, `cgGL.dll` and `soft_oal.dll` still have to come
-from elsewhere. Then run `start.bat` from that folder.
+msys DLLs. **Only `cg.dll` and `cgGL.dll` still have to come from elsewhere**,
+because the Cg Toolkit is NVIDIA-proprietary. Then run `start.bat` from that
+folder.
 
 Deploying a locally built DLL means copying it plus `dist/*` (minus
 `start.sh`) and `dist-windows/{start.bat,fix-libso.ps1,README.md}` — exactly
@@ -252,7 +253,12 @@ CI (`.github/workflows/build.yml`) has four jobs:
 
 - `build` — Linux i586; also compiles openal-soft from source, so it is slow.
 - `windows` — cross-build, DLL export and import checks, a `start.bat` lint,
-  and both test suites under Wine.
+  and both test suites under Wine. It also cross-builds OpenAL Soft 1.23.1
+  with mingw-w64 and ships it as `soft_oal.dll` (the name `al.rs` opens at
+  run time; CMake emits `OpenAL32.dll`), cached on the pinned tag. That step
+  checks the DLL imports no mingw runtime and still exports every entry point
+  `al.rs` patches — `al.rs` panics at startup if one is missing, so a version
+  bump must not drop any.
 - `line` — the only job on a Windows runner. Builds `line.exe` in 32-bit
   MSYS2 from a pinned `axylol/line` commit, because LINE is a Cygwin program
   and cannot be cross-compiled. Its output is cached on the pinned SHA, so

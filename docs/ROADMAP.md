@@ -63,8 +63,19 @@ how far we can go:
 |---|---|
 | `wal_3dxp.dll` | cross-built from Ubuntu in ~15 s, imports only stock Windows DLLs |
 | `line.exe` + `msys-2.0.dll`, `msys-gcc_s-1.dll`, `msys-stdc++-6.dll` | built by the `line` CI job, bundled |
-| `soft_oal.dll` | external — but OpenAL Soft cross-compiles with mingw-w64, so this is easy and just not done yet |
+| `soft_oal.dll` | cross-built with mingw-w64 in the `windows` job, bundled |
 | `cg.dll`, `cgGL.dll` | external, permanently — NVIDIA-proprietary, not redistributable |
+
+`cg.dll`/`cgGL.dll` are the only files a user still has to find. Everything
+else in a release is built from pinned source by our own CI.
+
+OpenAL Soft was not a new dependency when the Windows build picked it up:
+upstream's `build` job has compiled it from source and shipped it as
+`libopenal.so` since before this fork, and the archived C++ LINE port already
+opened `soft_oal.dll` by that name (`al.cpp`, `dlopen`). Windows was simply
+missing the build step. Note the licence: OpenAL Soft is **LGPL v2** (parts
+BSD-3-Clause), so the binary ships with `licenses/openal-soft/` — upstream's
+Linux artifact still has no licence text for it.
 
 **LINE cannot be cross-compiled.** It is a Cygwin program: `pei-i386`, imports
 `msys-2.0.dll`, calls `cygwin_attach_dll`/`cygwin_internal`/`cygwin_premain`.

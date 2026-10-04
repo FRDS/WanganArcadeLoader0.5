@@ -11,6 +11,8 @@ custom resolution.
 From this package:
 
 - `wal_3dxp.dll`, `start.bat`, `fix-libso.ps1`
+- `soft_oal.dll` — OpenAL Soft 1.23.1, cross-compiled by our CI and
+  self-contained; see `licenses/openal-soft/`
 - `config.toml`, `keyconfig.toml`, `gamecontrollerdb.txt`
 - `data/config.lua` (replaces the game's own; back that up first)
 - `tmp/`
@@ -27,12 +29,12 @@ Also in the `dist-windows-bundle` download:
   *same* 32-bit MSYS2 install: 64-bit ones fail with `0xc000007b`, and the
   giveaway is `msys-gcc_s-seh-1.dll` in place of `msys-gcc_s-1.dll`.
 
-From elsewhere, both **32-bit**:
+From elsewhere — the only thing left to fetch yourself, both **32-bit**:
 
 - `cg.dll`, `cgGL.dll` from the NVIDIA Cg Toolkit 3.1, from its `bin` folder
   (not `bin.x64`). These are NVIDIA-proprietary and can't be redistributed,
-  so they stay a manual step.
-- `soft_oal.dll` from [OpenAL Soft](https://openal-soft.org), `bin\Win32`.
+  so they stay a manual step. The game needs Cg at run time, and `shader.rs`
+  uses the compiler inside `cg.dll` to fix the dump's NVIDIA-only shaders.
 
 ## Running
 
@@ -129,4 +131,9 @@ complete corresponding source for the bundled `line.exe` is the `line-source`
 artifact of the CI run that produced the bundle, and is also on GitHub at the
 commit in `SOURCE.txt`.
 
-`cg.dll`, `cgGL.dll` and `soft_oal.dll` are not ours and are not included.
+`soft_oal.dll` is OpenAL Soft, LGPL v2 with parts under BSD-3-Clause;
+`licenses/openal-soft/` holds both texts plus the tag and build flags we used.
+It is unmodified, and the loader opens it by filename at run time, so you can
+substitute your own build of it without rebuilding anything else.
+
+`cg.dll` and `cgGL.dll` are NVIDIA's and are not included.

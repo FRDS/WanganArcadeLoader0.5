@@ -118,10 +118,98 @@ jobs:
         WINEDEBUG=-all cargo test --release --target i686-pc-windows-gnu --lib --config 'target.i686-pc-windows-gnu.runner="wine"'
         tests/mockline/run.sh target/i686-pc-windows-gnu/release/wal_3dxp.dll
 
+    # Upstream's build job has compiled openal-soft from source and shipped it
+    # as libopenal.so since before this fork; this is the Windows equivalent,
+    # which never existed. Unlike LINE, OpenAL Soft cross-compiles with
+    # mingw-w64, so it belongs here rather than on a Windows runner.
+    - name: Restore soft_oal.dll
+      id: oal
+      uses: actions/cache@v4
+      with:
+        path: openal-out
+        # Pinned input, so the key never moves. Bump -v1 by hand.
+        key: soft-oal-i686-1.23.1-v1
+
+    - name: Cross-build OpenAL Soft
+      if: steps.oal.outputs.cache-hit != 'true'
+      run: |
+        set -euo pipefail
+        # Same 1.23.1 pin as the build job: current master no longer compiles
+        # with this image's gcc (duplicate fmt formatter).
+        git clone --depth 1 --branch 1.23.1 https://github.com/kcat/openal-soft oal-src
+        cmake -S oal-src -B oal-build -DCMAKE_SYSTEM_NAME=Windows \
+          -DCMAKE_C_COMPILER=i686-w64-mingw32-gcc \
+          -DCMAKE_CXX_COMPILER=i686-w64-mingw32-g++ \
+          -DCMAKE_RC_COMPILER=i686-w64-mingw32-windres \
+          -DCMAKE_FIND_ROOT_PATH=/usr/i686-w64-mingw32 \
+          -DALSOFT_UTILS=FALSE -DALSOFT_EXAMPLES=FALSE -DALSOFT_TESTS=FALSE \
+          -DALSOFT_STATIC_LIBGCC=TRUE -DALSOFT_STATIC_STDCXX=TRUE \
+          -DCMAKE_BUILD_TYPE=Release
+        cmake --build oal-build -j"$(nproc)"
+        mkdir -p openal-out
+        # CMake emits OpenAL32.dll; the loader dlopens "soft_oal.dll", which is
+        # the name OpenAL Soft's own Windows distribution uses for the
+        # implementation (OpenAL32.dll there is the router). Renaming here is
+        # the same move the build job makes for libopenal.so.1.23.1.
+        cp oal-build/OpenAL32.dll openal-out/soft_oal.dll
+        i686-w64-mingw32-strip openal-out/soft_oal.dll
+
+        # OpenAL Soft is LGPL v2 (COPYING), parts BSD-3-Clause, so shipping the
+        # binary means shipping these. Cached alongside the DLL so a cache hit
+        # cannot produce a licence-less package.
+        cp oal-src/COPYING openal-out/COPYING.txt
+        cp oal-src/BSD-3Clause openal-out/BSD-3Clause.txt
+        cat > openal-out/SOURCE.txt <<'EOF'
+        OpenAL Soft - a software implementation of the OpenAL 3D audio API.
+
+          source      https://github.com/kcat/openal-soft
+          tag         1.23.1
+          licence     LGPL v2 (COPYING.txt); parts BSD-3-Clause (BSD-3Clause.txt)
+
+        soft_oal.dll here was cross-compiled from that tag by WanganArcadeLoader's
+        CI with mingw-w64 (i686-w64-mingw32), unmodified, configured with
+        ALSOFT_STATIC_LIBGCC and ALSOFT_STATIC_STDCXX so it needs no other DLLs.
+
+        The loader opens it by filename at run time, so you can drop in your own
+        build of OpenAL Soft in its place without rebuilding anything else. Upstream
+        calls this file soft_oal.dll too, in its bin/Win32 package.
+        EOF
+
+    # Runs on a cache hit too, so a restored copy is validated as well.
+    - name: Check soft_oal.dll
+      run: |
+        set -euo pipefail
+        dll=openal-out/soft_oal.dll
+        for f in "$dll" openal-out/COPYING.txt openal-out/BSD-3Clause.txt openal-out/SOURCE.txt; do
+          test -s "$f" || { echo "missing or empty $f"; exit 1; }
+        done
+        i686-w64-mingw32-objdump -f "$dll" | grep -q 'pei-i386' || { echo "not 32-bit x86"; exit 1; }
+        imports=$(i686-w64-mingw32-objdump -p "$dll" | sed -n 's/^\s*DLL Name: //p' | sort -u)
+        echo "$imports"
+        # Static libgcc/libstdc++ is the whole reason this is self-contained.
+        # If those flags ever stop taking effect, the runtime shows up here and
+        # users would need extra DLLs they have no way to know about.
+        if echo "$imports" | grep -qiE '^(libstdc\+\+-6|libgcc_s_|libwinpthread-1)'; then
+          echo "mingw runtime import: not self-contained"; exit 1
+        fi
+        # al.rs patches each of these to jump into this DLL and panics at
+        # startup if one is absent, so a version bump must not drop any.
+        exports=$(i686-w64-mingw32-objdump -p "$dll" |
+          sed -n 's/^[[:space:]]*\[[[:space:]]*[0-9]*\][[:space:]]*\([A-Za-z_][A-Za-z0-9_]*\)[[:space:]]*$/\1/p' | sort -u)
+        want=$(grep -oE '"alc?[A-Za-z0-9]+"' src/al.rs | tr -d '"' | sort -u)
+        missing=$(comm -23 <(echo "$want") <(echo "$exports"))
+        if [ -n "$missing" ]; then
+          echo "al.rs redirects entry points this build does not export:"; echo "$missing"; exit 1
+        fi
+        echo "all $(echo "$want" | wc -l) entry points al.rs redirects are exported"
+
     - name: Package
       run: |
         mkdir -p out
         cp target/i686-pc-windows-gnu/release/wal_3dxp.dll out/
+        cp openal-out/soft_oal.dll out/
+        mkdir -p out/licenses/openal-soft
+        cp openal-out/COPYING.txt openal-out/BSD-3Clause.txt openal-out/SOURCE.txt out/licenses/openal-soft/
         cp -r dist/* out/
         rm out/start.sh
         cp dist-windows/start.bat dist-windows/fix-libso.ps1 dist-windows/README.md out/
@@ -407,9 +495,9 @@ jobs:
         echo "--- bundle contents ---"
         find out -type f | sort
         for f in line.exe msys-2.0.dll msys-gcc_s-1.dll msys-stdc++-6.dll \
-                 wal_3dxp.dll start.bat fix-libso.ps1 README.md LICENSE.txt \
-                 config.toml keyconfig.toml gamecontrollerdb.txt data/config.lua \
-                 licenses/line/LICENSE.txt licenses/line/SOURCE.txt; do
+                 wal_3dxp.dll soft_oal.dll start.bat fix-libso.ps1 README.md \
+                 LICENSE.txt config.toml keyconfig.toml gamecontrollerdb.txt \
+                 data/config.lua licenses/line/LICENSE.txt licenses/line/SOURCE.txt; do
           test -s "out/$f" || { echo "bundle is missing $f"; exit 1; }
         done
 
