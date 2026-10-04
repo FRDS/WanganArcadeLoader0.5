@@ -398,17 +398,25 @@ unsafe extern "C" fn adm_swap_buffers(window_ptr: *mut AdmWindow) -> c_int {
 		// the two differ on a display with scaling.
 		let (window_width, window_height) = window.window.get_framebuffer_size();
 		let window_ar = window_width as f32 / window_height as f32;
-		let ar = CONFIG.width as f32 / CONFIG.height as f32;
 
 		// The game renders into the default framebuffer, so the most we can
 		// capture is what the drawable actually holds. Reading beyond it is
 		// undefined, and in practice leaves those rows of the FBO untouched
 		// for good -- the frozen band. A window shorter than CONFIG.height
 		// also means the game's own rasterisation was clipped, so there is
-		// nothing there to recover; the point of clamping is to leave the
-		// cleared black rather than stale pixels.
+		// nothing there to recover.
 		let captured_width = (CONFIG.width as i32).min(window_width);
 		let captured_height = (CONFIG.height as i32).min(window_height);
+
+		// Everything below works in terms of what was actually captured, not
+		// what was asked for. Normally they are the same and this changes
+		// nothing. When they are not, presenting the full CONFIG rectangle
+		// would pad the missing rows with black and show a bar; presenting
+		// the captured rectangle at its own aspect instead shows the part of
+		// the frame that exists, undistorted and filling the window. The
+		// content is cropped either way -- those rows were never rasterised
+		// -- so the bar bought nothing. The warning below is what says so.
+		let ar = captured_width as f32 / captured_height as f32;
 
 		// Said once, not per frame. A short drawable is not recoverable --
 		// the engine rasterised into a CONFIG-sized viewport that the window
@@ -478,8 +486,8 @@ unsafe extern "C" fn adm_swap_buffers(window_ptr: *mut AdmWindow) -> c_int {
 		gl::BlitFramebuffer(
 			0,
 			0,
-			CONFIG.width as i32,
-			CONFIG.height as i32,
+			captured_width,
+			captured_height,
 			viewport_x,
 			viewport_y,
 			viewport_x + viewport_width,
