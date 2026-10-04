@@ -249,8 +249,6 @@ unsafe fn listing(cg: &Cg, context: CgContext) -> String {
 enum Action {
 	/// The programs already in place suit this driver.
 	Leave(String),
-	/// Put the `.orig` copies back.
-	Restore(String),
 	/// Compile the `.cg` sources to portable ARB.
 	Recompile(String),
 }
@@ -295,15 +293,25 @@ fn decide(
 		};
 	}
 
-	// What is in place is already portable. If an earlier run set the shipped
-	// programs aside and this driver can run them, hand them back -- this is
-	// the case where a folder recompiled on an Intel laptop is later run on an
-	// NVIDIA desktop.
+	// What is in place is already portable. An earlier run set the shipped
+	// programs aside, and if this driver can run them they are the better
+	// ones -- but putting them back automatically is not safe yet.
+	//
+	// On a hybrid laptop (Intel iGPU + discrete NVIDIA) the probe opens its
+	// own window, which the driver may place on a different GPU than the one
+	// the game ends up rendering with. A real machine in the test set does
+	// exactly this: the probe can see an RTX 2070 while the game runs on
+	// Intel UHD. Restoring NVIDIA-only programs there puts the black world
+	// straight back. Until the probe's answer can be tied to the GPU the game
+	// actually uses, say so and let the user decide.
 	if state.backups > 0 && !state.backup_required.is_empty() {
-		if let Some(missing) = probe(&state.backup_required) {
-			if missing.is_empty() {
-				return Action::Restore(format!(
-					"this driver has {}, so the shipped programs can be used again",
+		if let Some(absent) = probe(&state.backup_required) {
+			if absent.is_empty() {
+				return Action::Leave(format!(
+					"the programs in place are portable, and this driver reports {}, so the \
+					 shipped ones in *.orig would work -- set shader_mode = \"original\" to use \
+					 them, which is not done automatically because a hybrid GPU can report one \
+					 card here and render on another",
 					state.backup_required.join(", ")
 				));
 			}
@@ -320,7 +328,18 @@ fn decide(
 /// replacements from the `.cg` sources.
 pub unsafe fn ensure_portable(mode: ShaderMode) {
 	if mode == ShaderMode::Original {
-		platform::log("shader: shader_mode = original, leaving data/shader untouched");
+		// Restoring is the whole point of this mode. If an earlier run put
+		// the shipped programs aside, "original" means hand them back, not
+		// keep the portable ones sitting there now.
+		let restored = restore_originals();
+		if restored > 0 {
+			let _ = std::fs::write(format!("{SHADER_DIR}/.recompiled"), "original\n");
+			platform::log(&format!(
+				"shader: shader_mode = original, put {restored} shipped programs back from .orig"
+			));
+		} else {
+			platform::log("shader: shader_mode = original, leaving data/shader untouched");
+		}
 		return;
 	}
 
@@ -374,13 +393,6 @@ pub unsafe fn ensure_portable(mode: ShaderMode) {
 	match decide(mode, &state, probe) {
 		Action::Leave(reason) => {
 			platform::log(&format!("shader: leaving data/shader as it is -- {reason}"));
-		}
-		Action::Restore(reason) => {
-			let restored = restore_originals();
-			platform::log(&format!(
-				"shader: put {restored} shipped programs back from .orig -- {reason}"
-			));
-			let _ = std::fs::write(format!("{SHADER_DIR}/.recompiled"), "original\n");
 		}
 		Action::Recompile(reason) if state.sources == 0 => {
 			platform::log(&format!(
@@ -439,12 +451,13 @@ unsafe fn recompile() {
 				continue;
 			}
 		};
-		// Sources are ASCII, but a dump of a Japanese arcade game can carry
-		// Shift-JIS comments, which are not valid UTF-8 and used to lose the
-		// whole program. Only comments are affected, so convert lossily.
+		// Seven of the Export dump's nineteen sources carry EUC-JP Japanese
+		// comments -- yuv.cg among them -- which are not valid UTF-8 and used to
+		// lose the whole program. Every non-ASCII byte in them sits inside a
+		// comment, so converting lossily only ever replaces text Cg ignores.
 		if std::str::from_utf8(&bytes).is_err() {
 			platform::log(&format!(
-				"shader: {} is not valid UTF-8, converting lossily (Shift-JIS comments?)",
+				"shader: {} is not valid UTF-8 (EUC-JP comments), converting lossily",
 				path.display()
 			));
 		}
@@ -608,9 +621,13 @@ mod tests {
 			backup_required: vec!["GL_NV_fragment_program2".to_string()],
 			backups: 62,
 		};
-		let action = decide(ShaderMode::Auto, &state, supports_everything);
-		assert!(matches!(action, Action::Restore(_)), "{action:?}");
-		// ...but not when that driver still cannot run them.
+		// Advisory only: a hybrid GPU can report one card to the probe and
+		// render on another, so the user is told rather than overridden.
+		let Action::Leave(reason) = decide(ShaderMode::Auto, &state, supports_everything) else {
+			panic!("expected advice, not an automatic restore");
+		};
+		assert!(reason.contains("shader_mode"), "{reason}");
+		// And nothing is said when that driver still cannot run them.
 		let action = decide(ShaderMode::Auto, &state, supports_nothing);
 		assert!(matches!(action, Action::Leave(_)), "{action:?}");
 	}
