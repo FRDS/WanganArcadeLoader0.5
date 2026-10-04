@@ -16,6 +16,7 @@ deadzone = 0.01
 # display that can hold 60. Turn it off on one that cannot, so fps_limit paces
 # the game rather than the display dragging it below 60 and slowing it down.
 vsync = true
+fps_limit = 60
 
 width = 640
 height = 480
