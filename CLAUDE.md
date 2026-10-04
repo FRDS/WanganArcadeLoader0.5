@@ -240,6 +240,19 @@ numbers.
   in the game's own output points at it. Note the files carry an `!!ARBfp1.0`
   header *and* an `OPTION NV_` line, so the header tells you nothing — the
   `OPTION` directives are the discriminator.
+- **Seven of the dump's 19 `.cg` sources are EUC-JP, not UTF-8.**
+  `light_trail`, `light_trail_cutoff`, `palette_sprite`, `radial_blur`,
+  `sprite`, `sprite_neg` and `yuv` carry Japanese comments in EUC-JP — in
+  files whose own Emacs modeline claims `coding: utf-8-unix`. `read_to_string`
+  fails on all seven, and an earlier version of `shader.rs` skipped them with
+  a bare `continue`, so they were never recompiled and stayed NVIDIA-only.
+  The visible symptom was the attract movie playing with red and blue
+  swapped, because `yuv.cg` is the Bink YUV→RGB converter; the HUD and the
+  world looked fine, so nothing pointed at shaders. Every non-ASCII byte in
+  all seven sits inside a comment, so `shader.rs` reads bytes and converts
+  lossily. **Never reach for `read_to_string` on dump assets**, and never
+  `continue` past one without logging — "24 programs, 0 failed" looked
+  healthy while two of nineteen sources were being dropped every launch.
 - **The game's own diagnostics do not exist.** `alchemy.ini`'s
   `printCompiledShaders` and `defaultReportLevel` are marked "Debug only" and
   are compiled out of the `Static/Release` build it ships as, so turning them
