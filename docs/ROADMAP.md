@@ -54,13 +54,23 @@ Also proven, 2026-10-04/05:
 
 - **Audio works**, on every machine and every test since we began shipping
   our own `soft_oal.dll` (OpenAL Soft 1.23.1, cross-built in CI).
+- **The game stays up.** It used to end itself inside a couple of minutes;
+  with SIGALRM ignored an idle attract loop ran 29 minutes at a flat 60fps and
+  was still going when the run was stopped from outside. One other ending
+  survives — see the known gaps.
 
-Still unverified: the widescreen correction's appearance (the arithmetic is
-unit-tested and mockline drives it through the real DLL at 1280x720, but no one
-has looked at a corrected frame yet), steering wheels and pedals, a full race
-to completion, and
-anything on Linux since the input rewrite (Linux is compile-only by decision
-— the GLFW keyboard switch and the SDL 0.38 bump are untested there).
+Still unverified:
+
+- **How the widescreen correction looks.** The arithmetic is unit-tested and
+  mockline drives it through the real DLL at 1280x720, but nobody has looked at
+  a corrected frame.
+- **The HUD attribution table**, which `hud.rs` collects but which needs a real
+  race: eleven idle minutes of the attract loop produced no `clRaceThread::draw`
+  call at all. Play one with `res_log = true` and the table lands in
+  `wal_3dxp.log` five seconds in.
+- Steering wheels and pedals, and a full race to completion.
+- Anything on Linux since the input rewrite — compile-only by decision, so the
+  GLFW keyboard switch and the SDL 0.38 bump are untested there.
 
 ## Decisions already made
 
@@ -78,27 +88,37 @@ anything on Linux since the input rewrite (Linux is compile-only by decision
   weakened.
 - **Windows-only testing**; Linux gets CI compile checks.
 - **GLFW keyboard on both platforms** (drops `x11`, `device_query`).
-- **Widescreen: the one-hook correction is in, and measured.** It was deferred
-  because it lives inside tattoohanz's closed fork of the loader DLL
-  (`msys-line_wal_3dxp.dll`), which has dozens of HUD/sprite/anm hooks plus
-  force feedback; LINE loads one plugin, so it can't run alongside ours, and
-  getting it would mean asking tattoohanz for source (it's GPLv3).
-  **What the engine actually does**, logged on hardware at 1280x960 and
-  1280x720 with `res_log`: it asks `igMatrix44f::makeOrthographicProjection`
-  for the same two boxes at either aspect — `[0, 639, 447, 0, -100, 100]` and
-  `[0, 640, 480, 0, -1, 1]`, in left/right/bottom/top/near/far order — while
-  the viewport follows the render size. So the 2D layer is laid out in
-  640-space and mapped onto the viewport: at 16:9 that is x2.0 against y1.5, a
-  third too wide. `res.rs::widen` widens the box to the render aspect instead,
-  centred, which is one hook rather than dozens. Worth knowing for anything
-  else that reaches for this: only the **six-float** overload is ever called —
-  the `igPlane`/`igVec3f` one and both `igMatrix44d` ones never fired — and it
-  is reached a few times a frame, not once a sprite.
-  What is still open is how it *looks*: elements positioned in 640-space keep
-  their coordinates, so the HUD occupies the middle 960 of 1280 pixels and
-  anything anchored to an edge sits inward of it. A race may also ask for boxes
-  the attract screens don't; `res_log` is how to see them, and `widen` leaves
-  anything it does not recognise alone.
+- **Widescreen is corrected in the projection, not per sprite**, and the
+  research behind that is in its own section below. It had been deferred
+  because it lives in tattoohanz's closed fork of the loader DLL
+  (`msys-line_wal_3dxp.dll`), which carries dozens of HUD/sprite/anm hooks plus
+  force feedback; LINE loads one plugin, so it cannot run alongside ours, and
+  his DLL is GPLv3 — as is this project, so asking him for source beats
+  reverse-engineering it.
+- **Gemballa patches applied in memory**, never to `main` on disk.
+- **ARM is pointless**: the game is 32-bit x86 and our code rewrites its
+  machine code, so an ARM build could never load into it. On ARM you run the
+  x86 build under emulation (Windows Prism, or Box64/Box32 on Android).
+
+## Widescreen
+
+**What the engine does**, logged on hardware at 1280x960 and 1280x720 with
+`res_log`: it asks `igMatrix44f::makeOrthographicProjection` for the same two
+boxes at either aspect — `[0, 639, 447, 0, -100, 100]` and
+`[0, 640, 480, 0, -1, 1]`, in left/right/bottom/top/near/far order — while the
+viewport follows the render size. So the 2D layer is laid out in 640-space and
+mapped onto whatever it is drawn into: at 16:9 that is x2.0 against y1.5, a
+third too wide. `res.rs::widen` widens the box to the render aspect instead,
+centred, which is one hook rather than dozens. Worth knowing for anything else
+that reaches for this: only the **six-float** overload is ever called — the
+`igPlane`/`igVec3f` one and both `igMatrix44d` ones never fired — and it is
+reached a few times a frame, not once a sprite.
+
+What is still open is **placement**: elements keep their 640-space coordinates,
+so the HUD occupies the middle 960 of 1280 pixels and anything anchored to an
+edge sits inward of it. A race may also ask for boxes the attract screens do
+not; `res_log` is how to see them, and `widen` leaves anything it does not
+recognise alone.
 
 ### What tattoohanz's widescreen patcher turned out to be
 
@@ -157,10 +177,6 @@ each console's x range, which is what decides its anchor. **It also found that
 sprites are not drawn on the main thread**, which any eventual nudge has to
 account for — `adm.rs` already marshals sprite-adjacent calls onto the main
 thread for exactly this reason.
-- **Gemballa patches applied in memory**, never to `main` on disk.
-- **ARM is pointless**: the game is 32-bit x86 and our code rewrites its
-  machine code, so an ARM build could never load into it. On ARM you run the
-  x86 build under emulation (Windows Prism, or Box64/Box32 on Android).
 
 ## Windows runtime strategy
 
@@ -223,7 +239,7 @@ the seam at `platform/windows/line.rs` is what keeps LINE replaceable.
 ## Known gaps, in the order I would take them
 
 Everything here is understood and deliberately left. None of it blocks a
-release; the first is the only one with a user-visible consequence.
+release; the first two are the ones with user-visible consequences.
 
 - **The game renders into the default framebuffer, not our FBO.** That is why
   the render size cannot exceed the window: the engine rasterises into a
