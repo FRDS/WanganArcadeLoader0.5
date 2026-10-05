@@ -27,13 +27,13 @@ static ORIGINAL_FOPEN: [AtomicPtrCell; 2] = [AtomicPtrCell::new(), AtomicPtrCell
 pub struct AtomicPtrCell(std::sync::atomic::AtomicUsize);
 
 impl AtomicPtrCell {
-	const fn new() -> Self {
+	pub(super) const fn new() -> Self {
 		AtomicPtrCell(std::sync::atomic::AtomicUsize::new(0))
 	}
-	fn get(&self) -> *const () {
+	pub(super) fn get(&self) -> *const () {
 		self.0.load(std::sync::atomic::Ordering::Relaxed) as *const ()
 	}
-	fn set(&self, value: *const ()) {
+	pub(super) fn set(&self, value: *const ()) {
 		self.0
 			.store(value as usize, std::sync::atomic::Ordering::Relaxed);
 	}

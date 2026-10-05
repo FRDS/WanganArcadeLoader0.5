@@ -29,6 +29,9 @@ _Bool game_app_is_main_thread(void *);
 void *game_thread_manager_current(void *);
 void game_call_from_main_thread(void *, void (*)(void *), void *);
 int game_create_texture_handle(void *, int, int);
+extern int line_ioctl_calls;
+extern unsigned long line_ioctl_last_op;
+int game_line_ioctl(int, unsigned long, int *);
 
 static int failures;
 #define CHECK(cond, what)                                                        \
@@ -153,6 +156,9 @@ static void *stub_stdout_value = NULL;
 static struct {
 	void *impl;
 } system_stub = {stub_system};
+static struct {
+	void *impl;
+} ioctl_stub = {game_line_ioctl};
 
 /* The function table, in line/plugin.cpp order. */
 static void *t_dlopen(const char *n) { (void)n; return NULL; }
@@ -162,6 +168,12 @@ static void t_hook(void *target, void *detour, void **original)
 {
 	if (target == (void *)stub_system) {
 		system_stub.impl = detour;
+		if (original) *original = target;
+		hooks++;
+		return;
+	}
+	if (target == (void *)game_line_ioctl) {
+		ioctl_stub.impl = detour;
 		if (original) *original = target;
 		hooks++;
 		return;
@@ -182,6 +194,7 @@ static void *t_resolve_stub(const char *n)
 {
 	if (strcmp(n, "system") == 0) return (void *)stub_system;
 	if (strcmp(n, "exit") == 0) return (void *)stub_exit;
+	if (strcmp(n, "ioctl") == 0) return (void *)game_line_ioctl;
 	if (strcmp(n, "stdout") == 0) return &stub_stdout_value;
 	return NULL;
 }
@@ -253,6 +266,14 @@ int main(int argc, char **argv)
 	sys("rm -rf /");
 	CHECK(!system_passed_through, "other system() commands are not run");
 
+	/* ioctl: the two custom ops are answered without troubling LINE. */
+	int (*io)(int, unsigned long, int *) = ioctl_stub.impl;
+	int io_arg = 0;
+	CHECK(io(7, 0x5463, &io_arg) == 0 && io(7, 0x5464, &io_arg) == 0 && line_ioctl_calls == 0,
+		  "ignore_custom_ioctls answers 0x5463/0x5464 without calling LINE");
+	CHECK(io(7, 0x5415, &io_arg) == 42 && line_ioctl_calls == 1 && line_ioctl_last_op == 0x5415,
+		  "every other ioctl passes through to LINE");
+
 	/* OpenAL: the game's alGenSources now jumps into soft_oal.dll. */
 	CHECK(((int (*)(void))sym("alGenSources"))() == 0xA1, "alGenSources redirected to soft_oal.dll");
 
@@ -273,6 +294,7 @@ int main(int argc, char **argv)
 		"_ZN3Gap4Math11igMatrix44f32makePerspectiveProjectionRadiansEfffff"))(
 		NULL, 1.0f, 0.1f, 640.0f / 480.0f, 1.0f, 1000.0f);
 	CHECK(perspective_aspect > 1.77f && perspective_aspect < 1.78f, "perspective aspect set to 16:9 (float args)");
+
 
 	/* Main-thread marshalling in adm.rs */
 	int (*create_texture)(void *, int, int) = impl("_ZN24clAlchemyTextureAccessor19createTextureHandleEii");

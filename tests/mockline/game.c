@@ -115,3 +115,19 @@ int game_create_texture_handle(void *self, int a1, int a2)
 	texture_handle_a1 = a1;
 	return 5;
 }
+
+/*
+ * LINE's ioctl stub. It lives here rather than in host.c so the loader's
+ * call through the trampoline is checked for stack alignment too.
+ */
+int line_ioctl_calls;
+unsigned long line_ioctl_last_op;
+int game_line_ioctl(int fd, unsigned long op, int *arg)
+{
+	ALIGNED_TOUCH();
+	(void)fd;
+	(void)arg;
+	line_ioctl_calls++;
+	line_ioctl_last_op = op;
+	return 42;
+}
