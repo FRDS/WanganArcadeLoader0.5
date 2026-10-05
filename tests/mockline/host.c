@@ -176,6 +176,11 @@ static void t_hook(void *target, void *detour, void **original)
 		hooks++;
 		return;
 	}
+	if (target == (void *)stub_exit) {
+		if (original) *original = target;
+		hooks++;
+		return;
+	}
 	if (target == (void *)game_line_ioctl) {
 		ioctl_stub.impl = detour;
 		if (original) *original = target;

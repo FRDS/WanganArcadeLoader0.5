@@ -10,6 +10,7 @@ mod files;
 mod ioctl;
 mod line;
 pub mod log;
+mod shutdown;
 mod system;
 
 use crate::*;
@@ -230,6 +231,7 @@ pub unsafe fn init() {
 
 	files::init();
 	ioctl::init();
+	shutdown::init();
 
 	// Windows can't set interface addresses; the game only needs the call to succeed.
 	hook::hook_symbol("_ZN5clNet19setInterfaceAddressEv", adachi as *const ());

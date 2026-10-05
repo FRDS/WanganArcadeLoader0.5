@@ -504,6 +504,9 @@ unsafe extern "C" fn adm_swap_buffers(window_ptr: *mut AdmWindow) -> c_int {
 	window.window.swap_buffers();
 	window.glfw.poll_events();
 	if window.window.should_close() {
+		// Said out loud so a log that just stops can be told apart from one
+		// where somebody shut the window.
+		platform::log("adm: the window was closed, stopping");
 		let window = window_ptr.read().window;
 		drop(window);
 		platform::exit(0);
