@@ -178,6 +178,32 @@ fn unsupported_extensions(extensions: &[String]) -> Option<Vec<String>> {
 	)
 }
 
+/// Narrows one driver answer to the extensions a caller asked about.
+///
+/// `probed` is which of `wanted` the driver turned out to lack, so anything
+/// outside `wanted` was never put to it at all. Filtering alone would report
+/// such an extension as supported -- it cannot be in `probed` -- which is a
+/// conclusive yes to a question nobody asked, and on this module's one
+/// decision that means a black world. `None` instead, which every caller
+/// reads as "assume unsupported".
+fn answer_from(
+	wanted: &[String],
+	probed: Option<&[String]>,
+	asked: &[String],
+) -> Option<Vec<String>> {
+	let absent = probed?;
+	if asked.iter().any(|extension| !wanted.contains(extension)) {
+		return None;
+	}
+	Some(
+		asked
+			.iter()
+			.filter(|extension| absent.contains(extension))
+			.cloned()
+			.collect(),
+	)
+}
+
 /// Puts the shipped programs back from the `.orig` copies an earlier run made,
 /// for the case where a folder recompiled on one GPU is later run on one that
 /// can use the originals.
@@ -245,14 +271,64 @@ unsafe fn listing(cg: &Cg, context: CgContext) -> String {
 		.to_string()
 }
 
+/// The Cg profile pair a recompile aims at.
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+struct Profiles {
+	vertex: &'static str,
+	fragment: &'static str,
+}
+
+impl Profiles {
+	/// ARB assembly, which every driver this game meets accepts. The fallback
+	/// for every uncertain path, and the only pair allowed on a folder whose
+	/// own profile we have not established.
+	const PORTABLE: Self = Self {
+		vertex: "arbvp1",
+		fragment: "arbfp1",
+	};
+}
+
+/// The profiles whose own `OPTION` lines are the ones in `declared`, or `None`
+/// when that is not a set we can name profiles for -- which means portable,
+/// since a profile we cannot name is one we have never tested.
+///
+/// Both halves have to be declared, which is what keeps the question answered
+/// the same as the question asked: see `answer_from`, where an extension
+/// nothing declared would come back supported without the driver ever hearing
+/// about it.
+///
+/// Only the pair this dump ships as is listed, deliberately. cgc emits
+/// vp30/fp30 as NV assembly (`!!VP2.0`, `!!FP1.0`) with no `OPTION` lines at
+/// all, so `required_nv_extensions` can never produce a set that selects them;
+/// and the ARB forms of that generation are gated by `_option`-suffixed
+/// extension names, which `OPTION NV_x;` -> `GL_NV_x` does not produce. A row
+/// nothing can reach is a row no test covers.
+fn native_profiles(declared: &[String]) -> Option<Profiles> {
+	let declares = |name: &str| declared.iter().any(|extension| extension == name);
+	(declares("GL_NV_vertex_program3") && declares("GL_NV_fragment_program2")).then_some(Profiles {
+		vertex: "vp40",
+		fragment: "fp40",
+	})
+}
+
+/// What one recompile pass did. Compile failures are counted apart from I/O
+/// ones because only the first is worth a second pass at another profile: a
+/// folder we cannot read or write fails the same way whatever we aim at.
+#[derive(Default)]
+struct Counts {
+	written: usize,
+	compile_failed: usize,
+	io_failed: usize,
+}
+
 #[derive(Debug)]
 enum Action {
 	/// The programs already in place suit this driver.
 	Leave(String),
 	/// Put the `.orig` copies back.
 	Restore(String),
-	/// Compile the `.cg` sources to portable ARB.
-	Recompile(String),
+	/// Compile the `.cg` sources, to these profiles.
+	Recompile(String, Profiles),
 }
 
 /// Works out what `data/shader` needs on this machine. The reason travels with
@@ -268,7 +344,7 @@ fn decide(
 	probe: impl Fn(&[String]) -> Option<Vec<String>>,
 ) -> Action {
 	if mode == ShaderMode::Portable {
-		return Action::Recompile("shader_mode = portable".to_string());
+		return Action::Recompile("shader_mode = portable".to_string(), Profiles::PORTABLE);
 	}
 
 	// start.sh's own recompile deletes each .fp/.vp before doing the work and
@@ -276,7 +352,24 @@ fn decide(
 	// .cg sources survive that, so it is recoverable -- but only if we notice
 	// the compiled programs are gone, which the old content test never did.
 	if state.missing > 0 {
-		return Action::Recompile(format!("{} compiled programs are missing", state.missing));
+		// Which profiles to aim at is the folder's own account of what it was
+		// built as: the live programs' OPTION lines, or the `.orig` copies'
+		// when no live program is left to ask.
+		let declared = if state.required.is_empty() {
+			&state.backup_required
+		} else {
+			&state.required
+		};
+		let profiles = match native_profiles(declared) {
+			// A conclusive yes is the only thing that buys the native pair.
+			// "The driver lacks one" and "could not ask" both go portable.
+			Some(native) if matches!(probe(declared), Some(absent) if absent.is_empty()) => native,
+			_ => Profiles::PORTABLE,
+		};
+		return Action::Recompile(
+			format!("{} compiled programs are missing", state.missing),
+			profiles,
+		);
 	}
 
 	if !state.required.is_empty() {
@@ -285,12 +378,16 @@ fn decide(
 				"this driver has {}, so the shipped programs are the better ones",
 				state.required.join(", ")
 			)),
-			Some(missing) => Action::Recompile(format!(
-				"this driver lacks {}, which the shipped programs need",
-				missing.join(", ")
-			)),
+			Some(missing) => Action::Recompile(
+				format!(
+					"this driver lacks {}, which the shipped programs need",
+					missing.join(", ")
+				),
+				Profiles::PORTABLE,
+			),
 			None => Action::Recompile(
 				"could not make a context to ask the driver what it supports".to_string(),
+				Profiles::PORTABLE,
 			),
 		};
 	}
@@ -382,15 +479,7 @@ pub unsafe fn ensure_portable(mode: ShaderMode) {
 		answer
 	};
 	// decide() reuses that one answer rather than opening a second window.
-	let probe = |asked: &[String]| -> Option<Vec<String>> {
-		probed.as_ref().map(|absent| {
-			asked
-				.iter()
-				.filter(|extension| absent.contains(extension))
-				.cloned()
-				.collect()
-		})
-	};
+	let probe = |asked: &[String]| answer_from(&wanted, probed.as_deref(), asked);
 
 	match decide(mode, &state, probe) {
 		Action::Leave(reason) => {
@@ -403,59 +492,105 @@ pub unsafe fn ensure_portable(mode: ShaderMode) {
 				"shader: put {restored} shipped programs back from .orig -- {reason}"
 			));
 		}
-		Action::Recompile(reason) if state.sources == 0 => {
+		Action::Recompile(reason, profiles) if state.sources == 0 => {
 			platform::log(&format!(
-				"shader: would recompile ({reason}) but {SHADER_DIR} has no .cg sources to \
-				 compile from, so nothing can be done here"
+				"shader: would recompile to {} / {} ({reason}) but {SHADER_DIR} has no .cg \
+				 sources to compile from, so nothing can be done here",
+				profiles.vertex, profiles.fragment
 			));
 		}
-		Action::Recompile(reason) => {
-			platform::log(&format!("shader: recompiling to portable ARB -- {reason}"));
-			recompile();
+		Action::Recompile(reason, profiles) => {
+			platform::log(&format!(
+				"shader: recompiling to {} / {} -- {reason}",
+				profiles.vertex, profiles.fragment
+			));
+			let counts = recompile(profiles);
+			// The native pair is only ever chosen on a conclusive probe, but
+			// the driver saying yes is not Cg promising it can produce that
+			// profile, and a folder half-converted to one that failed is the
+			// black world. Portable still works, so take it -- once, from
+			// here, because recompile() must not call itself.
+			if profiles != Profiles::PORTABLE && counts.compile_failed > 0 {
+				platform::log(&format!(
+					"shader: {} programs failed at {} / {}, falling back to portable ARB",
+					counts.compile_failed, profiles.vertex, profiles.fragment
+				));
+				recompile(Profiles::PORTABLE);
+			}
 		}
 	}
 }
 
-/// Compiles every `.cg` in data/shader to arbvp1/arbfp1, in place.
-unsafe fn recompile() {
+/// Compiles the `.cg` sources in data/shader to `profiles`, in place.
+///
+/// Portable does the whole folder: a mix of surviving NV programs and new ARB
+/// ones is the black world again. A native pair touches only what is missing,
+/// because a native pair is only ever chosen when the programs still in place
+/// are already that profile -- those are what the dump shipped, and the
+/// compiler in cg.dll is established as equivalent to cgc, not to whatever
+/// built them in 2008.
+unsafe fn recompile(profiles: Profiles) -> Counts {
+	let mut counts = Counts::default();
 	let Some(cg) = load_cg() else {
 		platform::log(&format!(
 			"shader: {} unavailable, cannot recompile, so the world will render \
 			 black on this driver. It ships beside the loader -- put it back next \
-			 to the game, delete {SHADER_DIR}/.recompiled and launch again.",
+			 to the game and launch again.",
 			platform::CG_LIBRARY
 		));
-		return;
+		return counts;
 	};
 
 	let context = (cg.create_context)();
 	if context.is_null() {
 		platform::log("shader: cgCreateContext failed, not recompiling");
-		return;
+		return counts;
 	}
-	let vertex_profile = (cg.get_profile)(c"arbvp1".as_ptr());
-	let fragment_profile = (cg.get_profile)(c"arbfp1".as_ptr());
+	let vertex_name = CString::new(profiles.vertex).unwrap();
+	let fragment_name = CString::new(profiles.fragment).unwrap();
+	let vertex_profile = (cg.get_profile)(vertex_name.as_ptr());
+	let fragment_profile = (cg.get_profile)(fragment_name.as_ptr());
+	let only_missing = profiles != Profiles::PORTABLE;
 
 	let Ok(entries) = std::fs::read_dir(SHADER_DIR) else {
 		(cg.destroy_context)(context);
-		return;
+		return counts;
 	};
 	let mut sources = 0;
-	let mut written = 0;
-	let mut failed = 0;
+	let mut left_alone = 0;
 	for entry in entries.flatten() {
 		let path = entry.path();
 		if path.extension().and_then(|e| e.to_str()) != Some("cg") {
 			continue;
 		}
 		sources += 1;
+
+		// Which of the two programs this source still owes us, and how to ask
+		// Cg for each. The entry point names come from the game's own .cg
+		// sources; start.bat used to pass the same pair to cgc.
+		let mut wanted = Vec::new();
+		for (profile, name, entry_point, extension) in [
+			(vertex_profile, profiles.vertex, c"v_main", "vp"),
+			(fragment_profile, profiles.fragment, c"p_main", "fp"),
+		] {
+			let output = path.with_extension(extension);
+			if only_missing && output.exists() {
+				left_alone += 1;
+				continue;
+			}
+			wanted.push((profile, name, entry_point, output));
+		}
+		if wanted.is_empty() {
+			continue;
+		}
+
 		// Skipping silently here is what made two programs vanish for good:
 		// `missing` then stays non-zero on every launch, so the capability
 		// check never runs and the files are never produced. Say what broke.
 		let bytes = match std::fs::read(&path) {
 			Ok(bytes) => bytes,
 			Err(error) => {
-				failed += 2;
+				counts.io_failed += wanted.len();
 				platform::log(&format!("shader: cannot read {}: {error}", path.display()));
 				continue;
 			}
@@ -471,23 +606,17 @@ unsafe fn recompile() {
 			));
 		}
 		let Ok(source) = CString::new(String::from_utf8_lossy(&bytes).replace('\0', "")) else {
-			failed += 2;
+			counts.io_failed += wanted.len();
 			platform::log(&format!("shader: cannot hand {} to Cg", path.display()));
 			continue;
 		};
 
-		// Entry point names come from the game's own .cg sources; start.bat
-		// passes the same pair to cgc.
-		for (profile, entry_point, extension) in [
-			(vertex_profile, c"v_main", "vp"),
-			(fragment_profile, c"p_main", "fp"),
-		] {
-			let output = path.with_extension(extension);
+		for (profile, name, entry_point, output) in wanted {
 			match compile(&cg, context, &source, profile, entry_point) {
 				Some(text) => match write_program(&output, &text) {
-					Ok(()) => written += 1,
+					Ok(()) => counts.written += 1,
 					Err(error) => {
-						failed += 1;
+						counts.io_failed += 1;
 						platform::log(&format!(
 							"shader: cannot write {}: {error}",
 							output.display()
@@ -495,9 +624,9 @@ unsafe fn recompile() {
 					}
 				},
 				None => {
-					failed += 1;
+					counts.compile_failed += 1;
 					platform::log(&format!(
-						"shader: {} failed to compile: {}",
+						"shader: {} failed to compile at {name}: {}",
 						output.display(),
 						listing(&cg, context)
 					));
@@ -507,18 +636,26 @@ unsafe fn recompile() {
 	}
 	(cg.destroy_context)(context);
 
-	// Stops start.bat running cgc over the same files next launch. The profile
-	// goes in the file so a folder moved between two different GPUs can be
-	// told apart from one that has simply already been done.
-	let _ = std::fs::write(format!("{SHADER_DIR}/.recompiled"), "arbvp1 arbfp1\n");
+	// Nothing reads this file any more -- both launchers' own cgc blocks are
+	// gone -- but it records which profiles the folder now holds, which is the
+	// one thing a folder moved between two machines cannot say for itself.
+	let _ = std::fs::write(
+		format!("{SHADER_DIR}/.recompiled"),
+		format!("{} {}\n", profiles.vertex, profiles.fragment),
+	);
 	platform::log(&format!(
-		"shader: {sources} .cg sources -> recompiled {written} programs to portable ARB, {failed} failed"
+		"shader: {sources} .cg sources -> {} programs at {} / {}, {left_alone} left alone, {} \
+		 failed to compile, {} could not be read or written",
+		counts.written, profiles.vertex, profiles.fragment, counts.compile_failed, counts.io_failed
 	));
+	counts
 }
 
 #[cfg(test)]
 mod tests {
-	use super::{decide, required_nv_extensions, Action, ShaderState};
+	use super::{
+		answer_from, decide, native_profiles, required_nv_extensions, Action, Profiles, ShaderState,
+	};
 	use crate::ShaderMode;
 
 	#[test]
@@ -561,13 +698,34 @@ mod tests {
 	// world or needlessly downgrading shaders that already worked, so every
 	// branch is pinned here rather than left to a run on real hardware.
 
+	const VERTEX: &str = "GL_NV_vertex_program3";
+	const FRAGMENT: &str = "GL_NV_fragment_program2";
+
+	/// What the dump ships as: both stages built for NVIDIA. This is the pair
+	/// the probe reported on the one NVIDIA machine to hand.
 	fn nv_only_dump() -> ShaderState {
 		ShaderState {
 			sources: 31,
 			missing: 0,
-			required: vec!["GL_NV_fragment_program2".to_string()],
+			required: vec![VERTEX.to_string(), FRAGMENT.to_string()],
 			backup_required: Vec::new(),
 			backups: 0,
+		}
+	}
+
+	/// The same dump with two programs gone, which is the branch that used to
+	/// return before the driver was asked anything.
+	fn nv_dump_missing_programs() -> ShaderState {
+		ShaderState {
+			missing: 4,
+			..nv_only_dump()
+		}
+	}
+
+	fn native() -> Profiles {
+		Profiles {
+			vertex: "vp40",
+			fragment: "fp40",
 		}
 	}
 
@@ -581,9 +739,27 @@ mod tests {
 		Some(wanted.to_vec())
 	}
 
+	/// A driver with one stage's extension and not the other's.
+	fn supports_only_fragment(wanted: &[String]) -> Option<Vec<String>> {
+		Some(
+			wanted
+				.iter()
+				.filter(|extension| extension.as_str() != FRAGMENT)
+				.cloned()
+				.collect(),
+		)
+	}
+
 	/// A probe that could not be run at all.
 	fn inconclusive(_: &[String]) -> Option<Vec<String>> {
 		None
+	}
+
+	fn profiles_of(action: &Action) -> Profiles {
+		match action {
+			Action::Recompile(_, profiles) => *profiles,
+			other => panic!("expected a recompile, got {other:?}"),
+		}
 	}
 
 	#[test]
@@ -595,30 +771,73 @@ mod tests {
 	#[test]
 	fn recompiles_when_the_driver_lacks_the_extensions() {
 		let action = decide(ShaderMode::Auto, &nv_only_dump(), supports_nothing);
-		let Action::Recompile(reason) = action else {
-			panic!("expected a recompile, got {action:?}");
-		};
-		assert!(reason.contains("GL_NV_fragment_program2"), "{reason}");
+		match action {
+			Action::Recompile(reason, profiles) => {
+				assert!(reason.contains(FRAGMENT), "{reason}");
+				assert_eq!(profiles, Profiles::PORTABLE);
+			}
+			other => panic!("expected a recompile, got {other:?}"),
+		}
 	}
 
 	#[test]
 	fn an_inconclusive_probe_recompiles_rather_than_risking_a_black_world() {
 		let action = decide(ShaderMode::Auto, &nv_only_dump(), inconclusive);
-		assert!(matches!(action, Action::Recompile(_)), "{action:?}");
+		assert_eq!(profiles_of(&action), Profiles::PORTABLE);
 	}
 
 	#[test]
 	fn rebuilds_shaders_that_are_missing_entirely() {
 		// What start.sh's old recompile left behind when cgc was absent: the
-		// .cg sources survive but every compiled program is gone.
+		// .cg sources survive, every compiled program is gone, and so is
+		// anything that said what profile the folder was built for.
 		let state = ShaderState {
 			sources: 31,
 			missing: 62,
 			..Default::default()
 		};
-		// Recompile even on a driver that could have run the originals.
+		// Portable even on a driver that answers yes to everything: nothing
+		// declared is not consent to a profile we would have to guess.
 		let action = decide(ShaderMode::Auto, &state, supports_everything);
-		assert!(matches!(action, Action::Recompile(_)), "{action:?}");
+		assert_eq!(profiles_of(&action), Profiles::PORTABLE);
+	}
+
+	#[test]
+	fn missing_programs_rebuild_to_the_profile_they_shipped_as() {
+		let state = nv_dump_missing_programs();
+		let action = decide(ShaderMode::Auto, &state, supports_everything);
+		assert_eq!(profiles_of(&action), native());
+	}
+
+	#[test]
+	fn missing_programs_rebuild_portable_unless_the_driver_says_yes() {
+		let state = nv_dump_missing_programs();
+		// Could not ask.
+		let action = decide(ShaderMode::Auto, &state, inconclusive);
+		assert_eq!(profiles_of(&action), Profiles::PORTABLE);
+		// Asked, and told no.
+		let action = decide(ShaderMode::Auto, &state, supports_nothing);
+		assert_eq!(profiles_of(&action), Profiles::PORTABLE);
+		// Told yes for one stage only. A mixed pair is not on offer here.
+		let action = decide(ShaderMode::Auto, &state, supports_only_fragment);
+		assert_eq!(profiles_of(&action), Profiles::PORTABLE);
+	}
+
+	#[test]
+	fn missing_programs_fall_back_to_what_the_backups_declare() {
+		// No live program left to ask, but the .orig copies still say what
+		// this folder was built for.
+		let state = ShaderState {
+			sources: 31,
+			missing: 62,
+			required: Vec::new(),
+			backup_required: vec![VERTEX.to_string(), FRAGMENT.to_string()],
+			backups: 62,
+		};
+		let action = decide(ShaderMode::Auto, &state, supports_everything);
+		assert_eq!(profiles_of(&action), native());
+		let action = decide(ShaderMode::Auto, &state, inconclusive);
+		assert_eq!(profiles_of(&action), Profiles::PORTABLE);
 	}
 
 	#[test]
@@ -627,7 +846,7 @@ mod tests {
 			sources: 31,
 			missing: 0,
 			required: Vec::new(), // what is in place is portable
-			backup_required: vec!["GL_NV_fragment_program2".to_string()],
+			backup_required: vec![FRAGMENT.to_string()],
 			backups: 62,
 		};
 		// The probe and the game share one OpenGL ICD per process, confirmed
@@ -653,7 +872,62 @@ mod tests {
 	fn the_config_override_skips_the_driver_entirely() {
 		// portable: recompile even though this driver handles the originals.
 		let action = decide(ShaderMode::Portable, &nv_only_dump(), supports_everything);
-		assert!(matches!(action, Action::Recompile(_)), "{action:?}");
+		assert_eq!(profiles_of(&action), Profiles::PORTABLE);
+		// ...including in the one branch that can pick a native pair.
+		let state = nv_dump_missing_programs();
+		let action = decide(ShaderMode::Portable, &state, supports_everything);
+		assert_eq!(profiles_of(&action), Profiles::PORTABLE);
 		// `original` is handled before decide() is reached; see ensure_portable.
+	}
+
+	// The profile table, and the probe answer the choice rests on.
+
+	#[test]
+	fn maps_the_declared_options_to_the_profiles_they_came_from() {
+		assert_eq!(
+			native_profiles(&[VERTEX.to_string(), FRAGMENT.to_string()]),
+			Some(native())
+		);
+	}
+
+	#[test]
+	fn half_declared_or_unknown_options_have_no_native_profile() {
+		// Nothing declared: the wrecked folder, and the case that must never
+		// be read as consent.
+		assert_eq!(native_profiles(&[]), None);
+		// One stage only. Choosing a pair from this would mean asking the
+		// driver about an extension nothing in the folder declared.
+		assert_eq!(native_profiles(&[VERTEX.to_string()]), None);
+		assert_eq!(native_profiles(&[FRAGMENT.to_string()]), None);
+		// A profile we have no name for.
+		assert_eq!(native_profiles(&["GL_NV_gpu_program4".to_string()]), None);
+	}
+
+	#[test]
+	fn an_unasked_extension_is_never_reported_as_supported() {
+		let wanted = vec![FRAGMENT.to_string()];
+		// The driver had everything it was asked about -- but it was never
+		// asked about the vertex extension, so there is no answer to give.
+		assert_eq!(answer_from(&wanted, Some(&[]), &[VERTEX.to_string()]), None);
+		assert_eq!(
+			answer_from(&wanted, Some(&[]), &[FRAGMENT.to_string()]),
+			Some(Vec::new())
+		);
+	}
+
+	#[test]
+	fn an_answer_names_only_what_the_driver_lacked() {
+		let wanted = vec![VERTEX.to_string(), FRAGMENT.to_string()];
+		let absent = vec![VERTEX.to_string()];
+		assert_eq!(
+			answer_from(&wanted, Some(absent.as_slice()), &wanted),
+			Some(vec![VERTEX.to_string()])
+		);
+		assert_eq!(
+			answer_from(&wanted, Some(absent.as_slice()), &[FRAGMENT.to_string()]),
+			Some(Vec::new())
+		);
+		// An inconclusive probe stays inconclusive.
+		assert_eq!(answer_from(&wanted, None, &wanted), None);
 	}
 }
