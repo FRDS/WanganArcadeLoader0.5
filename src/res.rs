@@ -287,12 +287,17 @@ unsafe extern "C" fn ortho_d_plane(
 /// Hooks `symbol` and says whether this dump has it. Which overloads exist is
 /// part of what the log is being read for, and a symbol that is missing or
 /// refused leaves a null trampoline, so it has to be said rather than assumed.
-unsafe fn watch(symbol: &str, func: *const (), what: &str) -> *const () {
+pub(crate) unsafe fn watch(
+	prefix: &str,
+	symbol: &str,
+	func: *const (),
+	what: &str,
+) -> *const () {
 	let original = hook::hook_symbol(symbol, func);
 	if original.is_null() {
-		platform::log(&format!("res: cannot watch {what}, {symbol} is missing"));
+		platform::log(&format!("{prefix}: cannot watch {what}, {symbol} is missing"));
 	} else {
-		platform::log(&format!("res: watching {what}"));
+		platform::log(&format!("{prefix}: watching {what}"));
 	}
 	original
 }
@@ -316,7 +321,8 @@ pub unsafe fn init() {
 	// times a frame, not once a sprite, which the call counter established.
 	if CONFIG.widescreen_hud || CONFIG.res_log {
 		ORIGINAL_ORTHO_F = watch(
-				"_ZN3Gap4Math11igMatrix44f26makeOrthographicProjectionEffffff",
+			"res",
+			"_ZN3Gap4Math11igMatrix44f26makeOrthographicProjectionEffffff",
 			ortho_f as *const (),
 			"igMatrix44f::makeOrthographicProjection(float x6)",
 		);
@@ -328,16 +334,19 @@ pub unsafe fn init() {
 		return;
 	}
 	ORIGINAL_ORTHO_F_PLANE = watch(
+		"res",
 		"_ZN3Gap4Math11igMatrix44f26makeOrthographicProjectionEPKNS0_7igPlaneERKNS0_7igVec3fE",
 		ortho_f_plane as *const (),
 		"igMatrix44f::makeOrthographicProjection(igPlane, igVec3f)",
 	);
 	ORIGINAL_ORTHO_D = watch(
+		"res",
 		"_ZN3Gap4Math11igMatrix44d26makeOrthographicProjectionEdddddd",
 		ortho_d as *const (),
 		"igMatrix44d::makeOrthographicProjection(double x6)",
 	);
 	ORIGINAL_ORTHO_D_PLANE = watch(
+		"res",
 		"_ZN3Gap4Math11igMatrix44d26makeOrthographicProjectionEPKNS0_7igPlaneERKNS0_7igVec3dE",
 		ortho_d_plane as *const (),
 		"igMatrix44d::makeOrthographicProjection(igPlane, igVec3d)",

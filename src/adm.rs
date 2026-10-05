@@ -583,7 +583,7 @@ static mut CL_MAIN_INSTANCE: *const *const *const c_void = std::ptr::null();
 static mut THREAD_MANAGER_CURRENT: *const () = std::ptr::null();
 static mut CALL_FROM_MAIN_THREAD: *const () = std::ptr::null();
 
-unsafe fn is_main_thread() -> bool {
+pub(crate) unsafe fn is_main_thread() -> bool {
 	let cl_app: *const c_void = call_game(CL_APP_INSTANCE, ());
 	call_game(CL_APP_IS_MAIN_THREAD, (cl_app,))
 }

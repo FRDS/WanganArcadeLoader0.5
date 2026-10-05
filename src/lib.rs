@@ -9,6 +9,7 @@ pub mod adm;
 pub mod al;
 pub mod card;
 pub mod hook;
+pub mod hud;
 pub mod jamma;
 pub mod opengl;
 pub mod platform;
@@ -527,6 +528,8 @@ pub(crate) unsafe fn init() {
 	if CONFIG.width != 640 || CONFIG.height != 480 {
 		res::init();
 	}
+	// Measurement only, and only when asked for; see the module comment.
+	hud::init();
 
 	let rom_info = hook::get_symbol("gRomInfo") as *const RomInfo;
 	let rom_info = rom_info.as_ref().unwrap();
