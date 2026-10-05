@@ -49,8 +49,6 @@ Run `start.bat` from the game folder. Each time, it:
 - creates the `tmp\data\...` folders and copies `sys_04.wav`, like `start.sh`;
 - repairs `libso/`: dumps copied from Linux often turn library symlinks into
   empty files, and `fix-libso.ps1` copies the real library over each one;
-- recompiles the shaders for non-NVIDIA GPUs the first time, if `cgc` is on
-  `PATH`;
 - runs LINE with the right settings.
 
 The loader writes its messages to `wal_3dxp.log`; the game and LINE write to
@@ -112,6 +110,19 @@ on Windows:
   the window rather than padded out, so the result is a quietly cropped
   picture rather than an obvious one; `wal_3dxp.log` names the number of rows
   lost. Use fullscreen if you want the whole frame.
+- `widescreen_hud` (default `true`): the dump lays its 2D layer out in 640×480
+  units and the engine maps that onto whatever it renders into, so a render
+  size that isn't 4:3 used to stretch the HUD, the menus and the attract movie
+  sideways — a third too wide at 16:9. The loader widens that layer's
+  projection to match instead, which keeps it undistorted and centred and
+  shows world where the stretch was. It does nothing at 4:3. Elements the game
+  anchors near the left or right edge sit a little inward of it; turn this off
+  if you'd rather have the old behaviour.
+- `ignore_alarm` (default `true`): the game sets a 50 Hz timer for a signal it
+  never handles, which left alone ends the game at a random moment with no
+  error and no crash dump — if it has ever "just closed" on you, this was why.
+  The loader tells the system to ignore that signal. There is no reason to turn
+  this off except to see the old behaviour.
 - `fullscreen = true` is borderless at your monitor's current resolution; the
   game's `width` × `height` image is scaled to fit, letterboxed if the aspect
   ratios differ. This is the safe choice, and the one to use for a 4:3 render
@@ -127,7 +138,9 @@ on Windows:
   only. Before the game reads them, the loader asks your driver whether it has
   the extensions they need; if it doesn't, it keeps the originals as `*.orig`
   and compiles portable replacements from the `.cg` sources. On an NVIDIA GPU
-  the originals are left in place, because they're the better ones. Set
+  the originals are left in place, because they're the better ones — and if
+  some of them are missing, only those are rebuilt, for that card rather than
+  portable. Set
   `portable` to always convert, or `original` to never touch the files — only
   worth doing if your driver reports support it doesn't honour. Whatever it
   decides, it says so in `wal_3dxp.log`.

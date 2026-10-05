@@ -18,7 +18,7 @@ LINE's plugin.
 | P1 platform layer, Windows boot | done, proven on hardware |
 | P2 window + OpenGL | **done, rendering confirmed on hardware** |
 | P3 input (keyboard, pads, wheels) | keyboard and pad confirmed; wheels/pedals still untested |
-| P4 custom resolution + file/TTY redirects | resolution proven on hardware at 1440×1080 windowed and borderless; `file_redirect` done on Windows, `ignore_custom_ioctls` still Linux-only |
+| P4 custom resolution + file/TTY redirects | done; resolution proven on hardware at 1440×1080 windowed and borderless, `file_redirect` and `ignore_custom_ioctls` both on Windows now |
 | P5 custom BGM | not started |
 | P6 Gemballa unlock | not started, fully researched below |
 | P7 network / localhost split-screen | not started |
@@ -55,7 +55,10 @@ Also proven, 2026-10-04/05:
 - **Audio works**, on every machine and every test since we began shipping
   our own `soft_oal.dll` (OpenAL Soft 1.23.1, cross-built in CI).
 
-Still unverified: steering wheels and pedals, a full race to completion, and
+Still unverified: the widescreen correction's appearance (the arithmetic is
+unit-tested and mockline drives it through the real DLL at 1280x720, but no one
+has looked at a corrected frame yet), steering wheels and pedals, a full race
+to completion, and
 anything on Linux since the input rewrite (Linux is compile-only by decision
 — the GLFW keyboard switch and the SDL 0.38 bump are untested there).
 
@@ -75,17 +78,85 @@ anything on Linux since the input rewrite (Linux is compile-only by decision
   weakened.
 - **Windows-only testing**; Linux gets CI compile checks.
 - **GLFW keyboard on both platforms** (drops `x11`, `device_query`).
-- **Widescreen was deferred**, on the grounds that it lives inside tattoohanz's
-  closed fork of the loader DLL (`msys-line_wal_3dxp.dll`), which has dozens of
-  HUD/sprite/anm hooks plus force feedback; LINE loads one plugin, so it can't
-  run alongside ours, and getting it would mean asking tattoohanz for source
-  (it's GPLv3). **This is being revisited** — the game exposes
-  `igMatrix44f::makeOrthographicProjection`, the direct counterpart to the
-  `makePerspectiveProjectionRadians` hook `res.rs` already installs, so the 2D
-  layer may be correctable from one hook rather than dozens. Note also that an
-  earlier HUD rescale (`clSpriteAnime::draw`, scale at `0x40`, x position at
-  `0x4C`) existed upstream and was removed in `af420be` in favour of
-  letterboxing; recover it with `git show 25c5d33:src/res.rs`.
+- **Widescreen: the one-hook correction is in, and measured.** It was deferred
+  because it lives inside tattoohanz's closed fork of the loader DLL
+  (`msys-line_wal_3dxp.dll`), which has dozens of HUD/sprite/anm hooks plus
+  force feedback; LINE loads one plugin, so it can't run alongside ours, and
+  getting it would mean asking tattoohanz for source (it's GPLv3).
+  **What the engine actually does**, logged on hardware at 1280x960 and
+  1280x720 with `res_log`: it asks `igMatrix44f::makeOrthographicProjection`
+  for the same two boxes at either aspect — `[0, 639, 447, 0, -100, 100]` and
+  `[0, 640, 480, 0, -1, 1]`, in left/right/bottom/top/near/far order — while
+  the viewport follows the render size. So the 2D layer is laid out in
+  640-space and mapped onto the viewport: at 16:9 that is x2.0 against y1.5, a
+  third too wide. `res.rs::widen` widens the box to the render aspect instead,
+  centred, which is one hook rather than dozens. Worth knowing for anything
+  else that reaches for this: only the **six-float** overload is ever called —
+  the `igPlane`/`igVec3f` one and both `igMatrix44d` ones never fired — and it
+  is reached a few times a frame, not once a sprite.
+  What is still open is how it *looks*: elements positioned in 640-space keep
+  their coordinates, so the HUD occupies the middle 960 of 1280 pixels and
+  anything anchored to an edge sits inward of it. A race may also ask for boxes
+  the attract screens don't; `res_log` is how to see them, and `widen` leaves
+  anything it does not recognise alone.
+
+### What tattoohanz's widescreen patcher turned out to be
+
+Worth having in writing, because it answers design questions we would otherwise
+have to measure, and because the archive may not be to hand next time. It is
+`WMMT3DX+_Widescreen_patcher.zip`: 39 replacement `.anm` layouts, 12 `.png`,
+`wm3_installer.exe` (PyInstaller, so a Python extractor reaches it — no
+disassembler), and his `msys-line_wal_3dxp.dll`.
+
+- **His transform is a rigid translation, not a scale.** Diffing his layouts
+  against the dump's own: 30,572 of 31,171 changed values are exactly ±106
+  units — the margin at 16:9 — with the direction chosen per element, left
+  going −106 and right +106. That rules out scaling positions about the centre,
+  which would spread each element internally: a needle off its dial, gaps in
+  per-glyph text.
+- **`.anm` animates x per keyframe.** The large files have tens of thousands of
+  changed values across several record types (the changed field is +0x1c most
+  often, then +0x34, +0x3c, +0x24). So a sprite's position arrives from
+  timeline evaluation, and hooking `setPosition` would see almost none of it.
+- **He did not move the in-race HUD.** Only 3 of the 39 files are race
+  consoles, and `cons_g_last_nokori.anm` is byte-identical to the dump — shipped
+  unchanged. `cons_g_speed`, `cons_g_map` and `cons_g_totaltime` are not in the
+  archive at all, and the two race files he did touch got irregular hand values
+  (+59, −26), not the margin. The other 36 are menus, mostly `topbar`/`bottombar`
+  — the full-width bars that a position-spread would leave short, which he
+  solved with assets. So whether his DLL re-anchors the race HUD at runtime is
+  an open question; his *assets* do not.
+- **Licensing decides the route.** His DLL is GPLv3 and so is this project, so
+  asking him for source is both cheaper than reverse-engineering and what the
+  licence is for; porting GPLv3→GPLv3 with credit is already the plan for P5.
+  His `.anm`/`.png` are derivatives of the game's own assets, so study them,
+  never ship them.
+
+### What the engine does with sprites, read out of the dump
+
+From the dump's own 20-byte setters with `objdump`, so none of this needs a
+hardware run — `main` is unstripped, 61,109 symbols:
+
+| class | x | y | scale x |
+|---|---|---|---|
+| `clSpriteAnime` | `+0x4C` | `+0x50` | `+0x40` |
+| `clSpriteFont` | `+0x20` | `+0x24` | — |
+
+The two layouts **differ**, so a per-sprite hook needs the offset per class.
+`clSpriteAnime`'s pair confirms the ones in the rescale upstream removed in
+`af420be` (`git show 25c5d33:src/res.rs`) — take its offsets, not its
+arithmetic: its `/8.0` fudge yields 40px where the geometry says 160.
+`clSpriteManager::entry` is not the single interception point it looks like —
+it is list plumbing over `clSpriteRootEntry`, unlinking a pool entry and making
+a vtable call at `+0x8` — so interception belongs at each class's `draw`,
+patch-call-restore.
+
+`hud.rs` is the measurement for this, behind `res_log`: it wraps each race
+console's `draw` so the sprites drawn inside it can be attributed, and reports
+each console's x range, which is what decides its anchor. **It also found that
+sprites are not drawn on the main thread**, which any eventual nudge has to
+account for — `adm.rs` already marshals sprite-adjacent calls onto the main
+thread for exactly this reason.
 - **Gemballa patches applied in memory**, never to `main` on disk.
 - **ARM is pointless**: the game is 32-bit x86 and our code rewrites its
   machine code, so an ARM build could never load into it. On ARM you run the
@@ -152,7 +223,7 @@ the seam at `platform/windows/line.rs` is what keeps LINE replaceable.
 ## Known gaps, in the order I would take them
 
 Everything here is understood and deliberately left. None of it blocks a
-release; the first two are the only ones with user-visible consequences.
+release; the first is the only one with a user-visible consequence.
 
 - **The game renders into the default framebuffer, not our FBO.** That is why
   the render size cannot exceed the window: the engine rasterises into a
@@ -164,18 +235,29 @@ release; the first two are the only ones with user-visible consequences.
   is also a rewrite of the one path proven on three machines, and the FBO has
   no depth or stencil today, so it needs care rather than enthusiasm. Until
   then: fullscreen for any render size that does not fit the window.
-- **`shader.rs` recompiles to ARB when programs are missing, whatever the
-  driver can do.** The `missing > 0` branch in `decide()` returns before the
-  probe result is consulted, so a machine that lacks a few compiled programs
-  gets ARB even if it could run `fp40`/`vp40`. Never observed biting — every
-  machine tested so far lacks the NV extensions anyway — and fixing it means
-  choosing a target profile with no NVIDIA machine to test the choice
-  against. Worth doing the next time one is to hand.
 - **`fopen64` cannot be hooked** (MinHook declines LINE's stub at `0x40ef00`),
   so some file activity is invisible to `file_log`. This is not cosmetic: the
   engine reads `data/shader/*` through it, so the one measurement that would
   settle when the engine loads shaders relative to window creation is the one
   we cannot take.
+- **The game can still die of SIGSEGV inside `msys-2.0.dll`**, at
+  `+0x14cf0d` reading `0x9b0c0342`, with byte-identical registers across runs
+  and an `esp` that is not a user-mode stack pointer. It lands immediately
+  after the console prints `seq().getThread().cancel()`, and Cygwin's own stack
+  trace comes back empty. Windows exit code `0x8B00` -- SIGSEGV with a core --
+  and a `line.exe.stackdump` beside the game. The mechanism that fits: the game
+  imports `pthread_cancel@GLIBC_2.0`, which LINE does **not** stub, so it is
+  Cygwin's own; but LINE *does* stub `__pthread_register_cancel`,
+  `__pthread_unregister_cancel` and `__pthread_unwind_next` as empty no-ops, so
+  the glibc cleanup frames the game pushes are never registered and Cygwin
+  unwinds a thread that has none. Reproduces on a loader build from before any
+  of this work, so it is not ours. Fixing it means patching LINE -- which the
+  `line` CI job now makes possible.
+  **It is not the same bug as the SIGALRM one, and ignoring SIGALRM does not
+  fix it.** It recurred with the alarm fix active -- same address, same
+  registers, a stackdump, eleven minutes into an idle run. An earlier
+  29-minute run that saw neither ending was luck rather than evidence, so the
+  two are independent and only the quiet one is fixed.
 - **`limit_fps()` busy-spins the last 2ms of every frame**, about 12% of one
   core continuously. Harmless on a desktop, less so on a Max-Q laptop. A
   swap-interval divisor would remove it on exact-multiple refresh rates, but
@@ -201,15 +283,28 @@ Two machines, and confusing them wastes runs.
 
 ## Remaining work, with research already done
 
-### P4 — TTY redirects on Windows
+### P4 — done: file and TTY redirects on Windows
 
-`file_redirect` now works on both platforms (`platform/windows/files.rs` hooks
-LINE's `open`/`open64`/`fopen` stubs). `ignore_custom_ioctls` is still
-Linux-only; on Windows hook LINE's stub via `line::resolve_stub("ioctl")`, the
-same way `system` and the file stubs already do.
+`file_redirect` and `ignore_custom_ioctls` both work on both platforms now:
+`platform/windows/files.rs` hooks LINE's `open`/`open64`/`fopen` stubs and
+`platform/windows/ioctl.rs` its `ioctl` stub.
 
-Two known gaps: `fopen64` refuses to hook (MinHook declines the stub at
-`0x40ef00`), so a little file activity is invisible; and LINE already rewrites
+What the ioctl hook is worth, measured rather than assumed: LINE's
+`stubs/ioctl.cpp` translates `TIOCMGET`, `FIONBIO`, `SIOCGIF*` and
+`TIOCGSERIAL`/`TIOCSSERIAL`, and prints `Untranslated ioctl <n>` before
+failing for anything else — so the game's two custom ops (`0x5463`/`0x5464`,
+21603/21604 in that message) would fail where Linux reports success. But a
+full-race `line_console.log` has not one such line, because the game reaches
+those ioctls through `/dev/ttyM1` and `/dev/ttyM2` and `open` fails on both
+first. So this is parity with Linux rather than a fix for anything observed,
+and it is why the hook answers without calling LINE's stub at all: there is
+nothing behind it worth calling. `tests/mockline` covers both halves.
+
+MinHook does take this stub, which was the open question given `fopen64`:
+a run on the desktop logs `ioctl: hooked ioctl()`.
+
+One gap left: `fopen64` refuses to hook (MinHook declines the stub at
+`0x40ef00`), so a little file activity is invisible. And LINE already rewrites
 `/tmp/...` to `./tmp/...` itself in `fixPathIfNeeded`, so don't add that
 rewrite again.
 
@@ -263,6 +358,50 @@ Start by hooking `clNet::getAddress` to return `local_ip` (default
 loopback for split-screen. `clNet::setInterfaceAddress` is already stubbed on
 Windows. If the game's LAN session needs broadcast, loopback won't carry it —
 say so and move to real IPs.
+
+## Fixed: the game ending itself
+
+For as long as anyone has run this, the game would sometimes just close --
+no error, no crash dump, nothing in any log. It is an unhandled **SIGALRM**.
+
+The game arms `setitimer(ITIMER_REAL)` for every 20ms -- 50 Hz -- and installs
+a handler for SIGPIPE and nothing else. There is no `signal(14)` and no
+`sigaction(14)` anywhere, measured with both hooked from before `main` ran and
+with 44 of the 64 deduplication slots still free, so that is a real negative
+and not a dropped line. LINE stubs none of `signal`, `sigaction` or
+`setitimer`, so all three are Cygwin's own. Whatever absorbed that signal on
+the arcade's Linux, here it eventually reaches a thread that does not block it
+and the default action ends the process.
+
+`ignore_alarm` (default on, `platform/windows/alarm.rs`) sets `SIG_IGN` for
+SIGALRM during init, before `shutdown.rs` hooks `signal` so the log does not
+read as though the game had done it. Nothing in the game can be listening, so
+nothing is lost; a version that installed its own handler would simply replace
+ours.
+
+**What it bought, measured:** before, an idle attract loop ended the process
+every time -- at 42s, 75s and 82s across three runs. After, it rendered for 29
+minutes at a flat 60fps and was still going when the run was stopped from
+outside; no ending signal of any kind was logged.
+
+**How it was found, which is the part worth keeping.** Three things had to be
+built before the question could even be asked, and all three are in the tree:
+
+- `shutdown.rs` hooks all four of msys's exit functions. The *negative* result
+  is what mattered -- none of them ever fires -- because it ruled out `exit()`
+  and left only a signal.
+- The process exit code, which every launch had been discarding. Cygwin encodes
+  a normal exit as `status << 8`, a signal death as `sig << 8`, and adds `0x80`
+  when it dumps core. `0x8B00` decodes as SIGSEGV-with-core and matched a run
+  that had a stackdump, which is what made `0x0E00` readable as signal 14
+  rather than `exit(14)` -- the two are identical from the code alone.
+- `shutdown.rs` also watches `setitimer`, `signal` and `sigaction`, which is
+  what showed the 50 Hz timer with nothing listening.
+
+Worth knowing for the next one of these: an access violation goes to the
+vectored handler in `crash.rs` and a Cygwin fatal signal writes
+`line.exe.stackdump`, so an ending with *neither* was never a crash. The
+Windows event log is also silent for both, since nothing faults.
 
 ## Fixed: `dist/start.sh`'s destructive recompile
 

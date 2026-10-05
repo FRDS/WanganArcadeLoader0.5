@@ -169,7 +169,21 @@ numbers.
   handles fullscreen (borderless, scaled with black bars), the frame limiter,
   and marshals texture/sprite calls onto the game's main thread.
 - `res.rs` — custom resolution: intercepts `lua_getglobal` for `SCREEN_XSIZE`
-  and friends, and rescales the minimap viewport and perspective FOV.
+  and friends, rescales the minimap viewport and perspective FOV, and widens
+  the 2D layer's orthographic box so a render that is not 4:3 doesn't stretch
+  it (`widen`, unit-tested as a pure function; `widescreen_hud` turns it off).
+  That hook has to decide what *not* to touch —
+  `igMatrix44f::makeOrthographicProjection` is a general matrix utility, so the
+  same call builds world-space projections — and it does so from the shape of
+  the box, the way `set_viewport` keys on `88x82` for the minimap. `res_log`
+  reports every projection the engine asks for, deduplicated; it is how the
+  2D layer's box was measured in the first place.
+- `hud.rs` — measurement for the widescreen work: wraps each race console's
+  `draw` so the sprites it draws can be attributed to it, and reports each
+  console's x range. Behind `res_log`, installs nothing otherwise. The field
+  offsets it reads were taken from the dump's own 20-byte setters —
+  `clSpriteAnime` keeps x at `+0x4C`, `clSpriteFont` at `+0x20`, and the two
+  layouts differ.
 - `card.rs` — emulates the magnetic card printer against `card.bin`.
 - `al.rs` — redirects 69 OpenAL entry points to the system OpenAL.
 - `shader.rs` — makes `data/shader` suit the machine before the engine reads
@@ -179,14 +193,20 @@ numbers.
   through a throwaway invisible GLFW window — GLFW is reference counted, so
   this leaves `adm.rs` free to initialise its own later. Only if the driver
   is missing something does it keep the originals as `*.orig` and recompile
-  the `.cg` sources to `arbvp1`/`arbfp1` with the compiler inside
-  `cg.dll`/`libCg.so`. On an NVIDIA GPU the shipped programs are left alone,
-  since `fp40`/`vp40` are the better ones; the `.orig` copies are even put
-  back if a folder recompiled elsewhere later runs on one. **Every uncertain
-  path recompiles** — portable ARB works everywhere, so an inconclusive probe
-  must never risk the black world. `decide()` takes the probe as a parameter
-  so the whole table is unit-tested; `shader_mode` in `config.toml` overrides
-  it. See the gotcha below.
+  the `.cg` sources with the compiler inside `cg.dll`/`libCg.so`. On an NVIDIA
+  GPU the shipped programs are left alone, since `fp40`/`vp40` are the better
+  ones; the `.orig` copies are even put back if a folder recompiled elsewhere
+  later runs on one. **Every uncertain path recompiles, and to portable ARB**
+  — `arbvp1`/`arbfp1` works everywhere, so an inconclusive probe must never
+  risk the black world. The target pair is only ever `vp40`/`fp40` when the
+  programs in the folder declare those extensions *and* the driver confirms
+  it has them, which is the one case where recompiling portable would throw
+  away the better programs; that pass rebuilds only what is missing, and
+  falls back to portable in the same run if Cg cannot produce it. `decide()`
+  takes the probe as a parameter so the whole table is unit-tested, and
+  `answer_from()` refuses to answer about an extension the driver was never
+  asked about; `shader_mode` in `config.toml` overrides the lot. See the
+  gotcha below.
 - `vendor/retour/` — the upstream `retour` fork with one change: its `win64`
   function-pointer impls are now `#[cfg(target_arch = "x86_64")]`, because
   current rustc rejects that ABI on 32-bit. Patched in via `[patch]` in
@@ -224,11 +244,16 @@ numbers.
   would mean redistributing the game's own assets, which this project doesn't
   do.
 - Formatting is **hard tabs** (`rustfmt.toml`), matching upstream.
-- The Windows build has no `plugins/` support, and `ignore_custom_ioctls` is
-  still Linux-only. `file_redirect` now works on both (`windows/files.rs`
-  hooks LINE's `open`/`open64`/`fopen` stubs). Note LINE already rewrites
-  `/tmp/...` to `./tmp/...` itself, so don't add that rewrite again — and
-  `fopen64` currently refuses to hook, so a little file activity is invisible.
+- The Windows build has no `plugins/` support. `file_redirect` and
+  `ignore_custom_ioctls` now work on both: `windows/files.rs` hooks LINE's
+  `open`/`open64`/`fopen` stubs and `windows/ioctl.rs` its `ioctl` stub. Note
+  LINE already rewrites `/tmp/...` to `./tmp/...` itself, so don't add that
+  rewrite again — and `fopen64` currently refuses to hook, so a little file
+  activity is invisible. Unlike the Linux interposer, the ioctl hook does not
+  call the original first: LINE's stub can only print `Untranslated ioctl` and
+  fail for the two ops we answer. The game reaches them through
+  `/dev/ttyM1`/`ttyM2`, whose `open` fails under LINE, so nothing has been
+  seen to call them — it is parity, not an observed fix.
 - **The dump's shaders are NVIDIA-only.** `data/shader/*.fp`/`*.vp` ship
   compiled for `vp40`/`fp40` with `OPTION NV_vertex_program3` and `BB1:`
   labels. A driver without the matching `GL_NV_*` extensions rejects all of
@@ -272,6 +297,19 @@ numbers.
   display that cannot hold 60 paces the swap. This is the context for every
   pacing decision in `adm.rs`, and the reason `limit_fps()` must not be
   weakened: rendering faster is not a free win, it is a bug.
+- **The game ends itself, and it is not a crash.** It arms
+  `setitimer(ITIMER_REAL)` at 50 Hz and installs no SIGALRM handler at all
+  (measured with `signal`/`sigaction` watched from before `main`). The signal
+  eventually reaches a thread that does not block it and the default action
+  takes the process: Windows exit code `0x0E00`, no `line.exe.stackdump`,
+  nothing from `crash.rs`, nothing in the Windows event log, and -- with all
+  four of msys's exit functions hooked -- no `exit()` either. `ignore_alarm`
+  (default on, `windows/alarm.rs`) sets `SIG_IGN` before the game can arm it.
+  **Read the exit code before calling anything a crash:** Cygwin encodes a
+  normal exit as `status << 8`, a signal death as `sig << 8`, and adds `0x80`
+  when it dumps core, so `0x0E00` is signal 14 and `0x8B00` is SIGSEGV with a
+  core. A *second* ending is still open -- SIGSEGV inside `msys-2.0.dll` at
+  `pthread_cancel`, with a stackdump; see docs/ROADMAP.md.
 - **ARM is not a target.** The game is 32-bit x86 and this code rewrites its
   machine code; run the x86 build under emulation instead.
 
