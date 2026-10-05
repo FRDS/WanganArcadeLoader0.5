@@ -131,3 +131,23 @@ int game_line_ioctl(int fd, unsigned long op, int *arg)
 	line_ioctl_last_op = op;
 	return 42;
 }
+
+/*
+ * The engine's 2D projection. Six float arguments is the widest float
+ * signature the loader marshals anywhere, so this is also what checks that
+ * call_game gets it right.
+ */
+int ortho_calls;
+float ortho_left, ortho_right, ortho_bottom, ortho_top;
+void *game_make_ortho(void *self, float l, float r, float b, float t, float n, float f)
+{
+	ALIGNED_TOUCH();
+	(void)n;
+	(void)f;
+	ortho_calls++;
+	ortho_left = l;
+	ortho_right = r;
+	ortho_bottom = b;
+	ortho_top = t;
+	return self;
+}

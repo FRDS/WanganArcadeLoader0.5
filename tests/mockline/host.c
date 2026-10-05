@@ -29,6 +29,9 @@ _Bool game_app_is_main_thread(void *);
 void *game_thread_manager_current(void *);
 void game_call_from_main_thread(void *, void (*)(void *), void *);
 int game_create_texture_handle(void *, int, int);
+extern int ortho_calls;
+extern float ortho_left, ortho_right, ortho_bottom, ortho_top;
+void *game_make_ortho(void *, float, float, float, float, float, float);
 extern int line_ioctl_calls;
 extern unsigned long line_ioctl_last_op;
 int game_line_ioctl(int, unsigned long, int *);
@@ -70,6 +73,7 @@ static struct {
 	{"lua_getglobal", game_lua_getglobal},
 	{"_ZN3Gap3Gfx19igAGLEVisualContext11setViewportEiiiiff", game_set_viewport},
 	{"_ZN3Gap4Math11igMatrix44f32makePerspectiveProjectionRadiansEfffff", game_make_perspective},
+	{"_ZN3Gap4Math11igMatrix44f26makeOrthographicProjectionEffffff", game_make_ortho},
 	{"_ZN11clAppSystem11getInstanceEv", game_app_get_instance},
 	{"_ZN11clAppSystem12isMainThreadEv", game_app_is_main_thread},
 	{"_ZN17clNPThreadManager7currentEv", game_thread_manager_current},
@@ -295,6 +299,14 @@ int main(int argc, char **argv)
 		NULL, 1.0f, 0.1f, 640.0f / 480.0f, 1.0f, 1000.0f);
 	CHECK(perspective_aspect > 1.77f && perspective_aspect < 1.78f, "perspective aspect set to 16:9 (float args)");
 
+	/* The 2D layer is laid out in 640-space; at 16:9 the box has to widen. */
+	((void *(*)(void *, float, float, float, float, float, float))impl(
+		"_ZN3Gap4Math11igMatrix44f26makeOrthographicProjectionEffffff"))(
+		NULL, 0.0f, 640.0f, 480.0f, 0.0f, -1.0f, 1.0f);
+	CHECK(ortho_calls == 1 && ortho_left < -106.6f && ortho_left > -106.7f &&
+			  ortho_right > 746.6f && ortho_right < 746.7f && ortho_bottom == 480.0f &&
+			  ortho_top == 0.0f,
+		  "the 2D ortho box widens to the render aspect, vertical untouched");
 
 	/* Main-thread marshalling in adm.rs */
 	int (*create_texture)(void *, int, int) = impl("_ZN24clAlchemyTextureAccessor19createTextureHandleEii");

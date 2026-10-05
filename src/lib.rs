@@ -58,6 +58,14 @@ pub struct Config {
 	width: u32,
 	height: u32,
 
+	/// Correct the engine's 2D projection when the render is not 4:3. The dump
+	/// lays its 2D layer out in 640x480 units and the engine maps that onto
+	/// whatever the viewport is, so a 16:9 render stretches the whole layer by
+	/// a third; this widens the projection instead, leaving the layer centred
+	/// and showing world where the stretch used to be. A no-op at 4:3. Turn it
+	/// off to get the old behaviour without giving up the resolution.
+	widescreen_hud: bool,
+
 	file_redirect: Option<Vec<FileRedirect>>,
 
 	/// Wait for the display's refresh before swapping. Right on any display
@@ -84,6 +92,12 @@ pub struct Config {
 	/// either way, since a path LINE can't reach fails silently otherwise.
 	#[cfg_attr(unix, allow(dead_code))]
 	file_log: bool,
+
+	/// Log the geometry the engine asks for: the screen size it reads out of
+	/// Lua, the viewports, the perspective FOV and every orthographic box, one
+	/// line per distinct set of arguments. Only does anything at a custom
+	/// resolution, since that is when `res.rs` runs at all.
+	res_log: bool,
 
 	/// Ask for an OpenGL debug context and log the driver's own messages. The
 	/// world is drawn with fixed-function and multitexture state, not Cg, so
@@ -114,12 +128,14 @@ const fn default_config() -> Config {
 		deadzone: 0.01,
 		width: 640,
 		height: 480,
+		widescreen_hud: true,
 		file_redirect: None,
 		vsync: true,
 		fps_limit: if cfg!(windows) { 60 } else { 0 },
 		input_log: false,
 		cg_log: false,
 		file_log: false,
+		res_log: false,
 		gl_debug: false,
 		shader_mode: ShaderMode::Auto,
 	}
