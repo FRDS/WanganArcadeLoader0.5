@@ -151,3 +151,15 @@ void *game_make_ortho(void *self, float l, float r, float b, float t, float n, f
 	ortho_top = t;
 	return self;
 }
+
+/* msys's signal(), which the loader uses to silence the game's SIGALRM. */
+int signal_calls, signal_last_signum;
+void *signal_last_handler;
+void *game_line_signal(int signum, void *handler)
+{
+	ALIGNED_TOUCH();
+	signal_calls++;
+	signal_last_signum = signum;
+	signal_last_handler = handler;
+	return (void *)0;
+}

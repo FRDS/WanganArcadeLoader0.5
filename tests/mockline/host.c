@@ -29,6 +29,9 @@ _Bool game_app_is_main_thread(void *);
 void *game_thread_manager_current(void *);
 void game_call_from_main_thread(void *, void (*)(void *), void *);
 int game_create_texture_handle(void *, int, int);
+extern int signal_calls, signal_last_signum;
+extern void *signal_last_handler;
+void *game_line_signal(int, void *);
 extern int ortho_calls;
 extern float ortho_left, ortho_right, ortho_bottom, ortho_top;
 void *game_make_ortho(void *, float, float, float, float, float, float);
@@ -181,6 +184,11 @@ static void t_hook(void *target, void *detour, void **original)
 		hooks++;
 		return;
 	}
+	if (target == (void *)game_line_signal) {
+		if (original) *original = target;
+		hooks++;
+		return;
+	}
 	if (target == (void *)game_line_ioctl) {
 		ioctl_stub.impl = detour;
 		if (original) *original = target;
@@ -204,6 +212,7 @@ static void *t_resolve_stub(const char *n)
 	if (strcmp(n, "system") == 0) return (void *)stub_system;
 	if (strcmp(n, "exit") == 0) return (void *)stub_exit;
 	if (strcmp(n, "ioctl") == 0) return (void *)game_line_ioctl;
+	if (strcmp(n, "signal") == 0) return (void *)game_line_signal;
 	if (strcmp(n, "stdout") == 0) return &stub_stdout_value;
 	return NULL;
 }
@@ -274,6 +283,10 @@ int main(int argc, char **argv)
 		  "system(find) writes a sorted tmp/find.txt");
 	sys("rm -rf /");
 	CHECK(!system_passed_through, "other system() commands are not run");
+
+	/* SIGALRM is silenced at init, before anything hooks signal(). */
+	CHECK(signal_calls == 1 && signal_last_signum == 14 && signal_last_handler == (void *)1,
+		  "SIGALRM set to SIG_IGN during init");
 
 	/* ioctl: the two custom ops are answered without troubling LINE. */
 	int (*io)(int, unsigned long, int *) = ioctl_stub.impl;

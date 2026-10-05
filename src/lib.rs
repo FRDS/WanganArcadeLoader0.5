@@ -52,6 +52,13 @@ pub struct Config {
 	card_emu: bool,
 	block_sudo: bool,
 	ignore_custom_ioctls: bool,
+
+	/// Ignore SIGALRM, which the game arms a 50 Hz timer for and never handles.
+	/// Left to itself that signal ends the process at a random moment with no
+	/// log, no stackdump and no error -- the "it closed by itself" ending.
+	/// Windows only: on the arcade's own Linux something absorbed it.
+	#[cfg_attr(unix, allow(dead_code))]
+	ignore_alarm: bool,
 	dongle: String,
 	local_ip: Option<String>,
 	deadzone: f32,
@@ -123,6 +130,7 @@ const fn default_config() -> Config {
 		card_emu: true,
 		block_sudo: true,
 		ignore_custom_ioctls: true,
+		ignore_alarm: true,
 		dongle: String::new(),
 		local_ip: None,
 		deadzone: 0.01,

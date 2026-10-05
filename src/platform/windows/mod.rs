@@ -4,6 +4,7 @@
 //! symbol lookup and hooking (MinHook). libc calls go to LINE's stubs, which
 //! we hook by address where the game needs different behaviour.
 
+mod alarm;
 mod cg;
 mod crash;
 mod files;
@@ -231,6 +232,7 @@ pub unsafe fn init() {
 
 	files::init();
 	ioctl::init();
+	alarm::init();
 	shutdown::init();
 
 	// Windows can't set interface addresses; the game only needs the call to succeed.
