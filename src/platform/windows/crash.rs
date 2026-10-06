@@ -118,10 +118,32 @@ unsafe fn locate(address: usize) -> String {
 	}
 	if let Some((start, size)) = line::main_module_range() {
 		if (start..start + size).contains(&address) {
-			return format!("main (ELF) {address:#x}");
+			// The game is not position-independent, so the address is the one
+			// its own symbol table was linked at; see `elfsym`.
+			return match crate::elfsym::describe(address as u32) {
+				Some(symbol) => format!("main (ELF) {address:#x} {symbol}"),
+				None => format!("main (ELF) {address:#x}"),
+			};
 		}
 	}
 	"unknown module (another ELF library or heap)".to_string()
+}
+
+/// Whether the bytes before `address` are a call, i.e. whether a stack slot
+/// holding it is a return address rather than data that happens to point at a
+/// module.
+///
+/// The C++ plugin's version accepts only `E8 rel32`, a direct call. The engine
+/// is C++ and calls through vtables constantly, so the `FF /2` indirect forms
+/// matter as much -- `E8` alone would miss exactly the frames a virtual call
+/// leaves behind. `/2` means the ModRM reg field is 2, which is what keeps a
+/// stray `0xFF` in the preceding bytes from counting.
+unsafe fn after_a_call(address: usize) -> bool {
+	if address < 8 || readable_bytes(address - 8) < 8 {
+		return false;
+	}
+	let byte = |back: usize| ((address - back) as *const u8).read_volatile();
+	byte(5) == 0xE8 || (2..=7).any(|back| byte(back) == 0xFF && byte(back - 1) & 0x38 == 0x10)
 }
 
 unsafe extern "system" fn handler(pointers: *mut ExceptionPointers) -> i32 {
@@ -166,14 +188,20 @@ unsafe extern "system" fn handler(pointers: *mut ExceptionPointers) -> i32 {
 		reg(0xB8)
 	);
 
-	// Values on the stack that point into known modules are likely return addresses.
+	// Values on the stack that point into known modules are likely return
+	// addresses; the ones a call instruction leads to almost certainly are.
 	msg += "\n  stack:";
 	let slots = (readable_bytes(esp as usize) / 4).min(32);
 	for i in 0..slots {
 		let value = ((esp as usize + i * 4) as *const u32).read_volatile() as usize;
 		let place = locate(value);
 		if !place.starts_with("unknown") {
-			msg += &format!("\n    [esp+{:#04x}] {value:#010x} {place}", i * 4);
+			let called = if after_a_call(value) {
+				" <- called from"
+			} else {
+				""
+			};
+			msg += &format!("\n    [esp+{:#04x}] {value:#010x} {place}{called}", i * 4);
 		}
 	}
 

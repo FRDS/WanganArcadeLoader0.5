@@ -8,6 +8,7 @@ use std::str::FromStr;
 pub mod adm;
 pub mod al;
 pub mod card;
+pub mod elfsym;
 pub mod hook;
 pub mod hud;
 pub mod jamma;
@@ -533,6 +534,9 @@ pub(crate) unsafe fn init() {
 	KEYCONFIG = Some(keyconfig);
 
 	platform::init();
+	// Read the game's symbols up front: the crash reporter needs them to name
+	// a function, and an exception handler is no place to open a file.
+	elfsym::load();
 	// Before the engine reads them, so the fixed files are the ones it loads.
 	shader::ensure_portable(CONFIG.shader_mode);
 
