@@ -58,7 +58,7 @@ static struct {
 	char name[32], region[32], release_type[32], date[32], time[32];
 	int revision;
 	char revision_name[32];
-} rom_info = {.revision_name = "W3P100-2-0-0-A01"};
+} rom_info = {.revision_name = "W3P100-2-NA-DAT0-B02"};
 #pragma pack(pop)
 
 /* clMain singleton: [instance] -> object with the thread manager at +0x40. */
@@ -380,8 +380,18 @@ int main(int argc, char **argv)
 			  perspective_fov < 1.26f,
 		  "the widened FOV keeps the vertical angle (tangent, not angle, scaled)");
 
-	/* A projection that did not arrive at 4:3 is not ours: this used to have
-	   its FOV divided by 4:3 anyway. */
+	/* What hardware actually sends: the engine has already worked the aspect
+	   out from the screen size it read from Lua, so the call arrives at 16:9
+	   and never at 4:3. Gating the widening on 4:3 arriving would mean never
+	   widening anything at a custom resolution. */
+	((void (*)(void *, float, float, float, float, float))impl(
+		"_ZN3Gap4Math11igMatrix44f32makePerspectiveProjectionRadiansEfffff"))(
+		NULL, 1.0f, 0.1f, 1280.0f / 720.0f, 1.0f, 1000.0f);
+	CHECK(perspective_fov > 1.25f && perspective_fov < 1.26f,
+		  "a projection that already carries the render aspect is still widened");
+
+	/* But a projection at neither aspect is the engine's own, authored for
+	   what it asks for, and not ours to touch. */
 	((void (*)(void *, float, float, float, float, float))impl(
 		"_ZN3Gap4Math11igMatrix44f32makePerspectiveProjectionRadiansEfffff"))(
 		NULL, 1.0f, 0.1f, 1.0f, 1.0f, 1000.0f);

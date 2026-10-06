@@ -221,18 +221,20 @@ pub(crate) unsafe fn watch_gl_ortho(real: *const ()) -> *const () {
 
 // ---------------------------------------------------------------- projections
 
-/// The horizontal FOV that shows the same world at `render_aspect` as `fov`
-/// showed at 4:3, so widening the screen adds width and nothing else.
+/// The horizontal FOV that shows the same world at `aspect` as `fov` showed at
+/// 4:3, so a wider screen adds width and nothing else.
 ///
 /// The first argument of `makePerspectiveProjectionRadians` is the
 /// **horizontal** angle, and the engine derives the vertical one from it as
-/// `atan(tan(fov / 2) / aspect)`. Scaling the angle in proportion to the
-/// aspect -- which is what this used to do -- therefore changes the vertical
-/// FOV as well, so the 3D drifts out of step with the 2D laid over it. It is
-/// the *tangent* that has to scale: then the vertical angle comes out
+/// `atan(tan(fov / 2) / aspect)`. The angle it asks for is authored for the
+/// cabinet's 4:3 whatever it is rendering into, so at a wider aspect the same
+/// angle shows *less* world top to bottom -- which is why it has to be
+/// widened at all. Scaling the angle in proportion to the aspect -- which is
+/// what this used to do -- overshoots and moves the vertical FOV with it. It
+/// is the *tangent* that has to scale: then the vertical angle comes out
 /// bit-identical and only the horizontal grows.
-fn widen_fov(fov: f32, render_aspect: f32) -> f32 {
-	2.0 * ((fov * 0.5).tan() * render_aspect / ORIGINAL_ASPECT).atan()
+fn widen_fov(fov: f32, aspect: f32) -> f32 {
+	2.0 * ((fov * 0.5).tan() * aspect / ORIGINAL_ASPECT).atan()
 }
 
 static mut ORIGINAL_MAKE_PERSPECTIVE: *const () = std::ptr::null();
@@ -245,11 +247,15 @@ unsafe extern "C" fn make_perspective(
 	a5: c_float,
 ) {
 	let render_aspect = CONFIG.width as f32 / CONFIG.height as f32;
-	// Only a projection laid out for the cabinet's 4:3 is ours to widen. This
-	// is a general utility -- the engine builds others through it, and the FOV
-	// used to be rescaled even for those, because the old arithmetic divided
-	// by 4:3 whatever the aspect coming in was.
-	let (new_fov, new_aspect_ratio) = if aspect_ratio == ORIGINAL_ASPECT {
+	// Which projections are ours to widen. Measured on hardware at 1280x720:
+	// the engine asks for `fov 0.785 aspect 1.7778`, i.e. it has already
+	// worked the aspect out from the screen size `lua_getglobal` handed it, so
+	// gating on 4:3 arriving would mean never widening anything at a custom
+	// resolution. It still has to arrive as one of the two -- this is a
+	// general utility and the engine builds its own projections through it,
+	// which are authored for the aspect they ask for and are not ours.
+	let from_the_screen = aspect_ratio == ORIGINAL_ASPECT || aspect_ratio == render_aspect;
+	let (new_fov, new_aspect_ratio) = if from_the_screen {
 		(widen_fov(fov, render_aspect), render_aspect)
 	} else {
 		(fov, aspect_ratio)
