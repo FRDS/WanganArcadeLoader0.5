@@ -94,8 +94,9 @@ ADM mode config.
 
 `src/platform/` is the only OS-specific code; the rest of the crate calls
 through it. Both sides export the same surface (`get_symbol`, `hook`,
-`write_memory`, `load_library`, `library_symbol`, `log`, `exit`, `init`,
-`network_available`, `load_plugins`, `OPENAL_LIBRARY`), re-exported by
+`write_memory`, `load_library`, `try_load_library`, `library_symbol`, `log`,
+`exit`, `init`, `network_available`, `load_plugins`, `OPENAL_LIBRARY`,
+`CG_LIBRARY`), re-exported by
 `platform/mod.rs` under `#[cfg]`. Adding an OS-specific capability means
 adding it to *both* `linux.rs` and `windows/mod.rs`, not `#[cfg]`-ing at the
 call site.
@@ -184,7 +185,26 @@ numbers.
   offsets it reads were taken from the dump's own 20-byte setters —
   `clSpriteAnime` keeps x at `+0x4C`, `clSpriteFont` at `+0x20`, and the two
   layouts differ.
-- `card.rs` — emulates the magnetic card printer against `card.bin`.
+- `card.rs` — emulates the magnetic card printer against `card.bin`, which is
+  207 bytes: three 69-byte tracks and a CRC-16/CCITT-FALSE at `0xCD` over the
+  rest. Most of it is the status bytes rather than the data:
+  `clCardPrinter::startSequence()` zeroes s1/s2/s3 before every command and
+  `0x00` is not the `0x30` that means "normal", so **every command has to
+  answer with all three**, and the status has to be written before the command
+  word that tells the game to read it. `respond` is a pure function over the
+  command, its payload and the card, so the thirteen commands and the three
+  partial-write selectors are unit-tested; `exec` only marshals. Also answers
+  `clCardDeviceGameAutoService::getResult`, which otherwise latches a card
+  error after enough idle attract polls. `card_log` traces every command.
+- `elfsym.rs` — reads the game ELF's `.dynsym` so `crash.rs` can name the
+  function an address is in. `main` is `ET_EXEC` and not
+  position-independent, so a link address is a runtime address; there is no
+  `.symtab` in the Export dump, and 47,937 of its 61,074 `.dynsym` entries are
+  functions with an address. Bounded by `st_size`, so an address outside every
+  function is reported as the module and offset it already was.
+- `report.rs` — `Reported::say`, which logs a line once and then goes quiet
+  after 64 distinct ones. Anything on a per-frame or per-draw path goes
+  through one of these; see the dedup gotcha below.
 - `al.rs` — redirects 69 OpenAL entry points to the system OpenAL.
 - `shader.rs` — makes `data/shader` suit the machine before the engine reads
   it. Each compiled program declares what it needs in its own `OPTION NV_*;`
@@ -285,9 +305,12 @@ numbers.
   opt-in per subsystem: `cg_log` (shader profile chosen, Cg listings on
   failure), `file_log` (every file opened; failures always logged),
   `gl_debug` (an OpenGL debug context relaying the driver's own messages —
-  this is what found the shader bug). Anything logged per-frame or per-draw
-  **must be deduplicated**: an early `gl_debug` build without it produced a
-  70 MB log in a single run.
+  this is what found the shader bug), `card_log` (every printer command and the
+  status it answered with). Anything logged per-frame or per-draw **must be
+  deduplicated**: an early `gl_debug` build without it produced a 70 MB log in
+  a single run. Use `report.rs` — a `static Reported` per subsystem, which
+  stops after 64 distinct messages, because deduplicating by text alone never
+  repeats for a line carrying an address or a size and so never stops.
 - **Frame rate is game speed.** The engine advances one simulation step per
   frame drawn, so anything that changes the frame rate changes how fast the
   game plays — observed directly: holding the rate below 60 made the game run

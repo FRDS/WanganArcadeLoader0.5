@@ -205,7 +205,11 @@ disassembler), and his `msys-line_wal_3dxp.dll`.
 ### What the engine does with sprites, read out of the dump
 
 From the dump's own 20-byte setters with `objdump`, so none of this needs a
-hardware run — `main` is unstripped, 61,109 symbols:
+hardware run — `main` carries its symbols, 61,109 by `objdump`'s count. (The
+`47,937` reported above is the same table counted differently: `readelf -S`
+says there is no `.symtab` at all, `.dynsym` holds 61,074 entries, and 47,937
+of those are functions with an address, which is what `elfsym.rs` keeps. The
+remainder are data, undefined imports and the null entry.)
 
 | class | x | y | scale x |
 |---|---|---|---|

@@ -100,6 +100,13 @@ on Windows:
   `alchemy.ini` (`printCompiledShaders`, `defaultReportLevel`) is marked "Debug
   only" and is compiled out of the release build the game ships as, so it
   cannot tell you any of this — the loader has to.
+- `card_log` (default `false`): logs every command the game sends the card
+  reader, its payload size and the status the emulation answers with. Turn this
+  on if the title screen says the card reader isn't functional, if a save
+  doesn't stick, or if anything card-shaped goes wrong at the end of a race —
+  it names the command and what it was told, which is the only way to see
+  inside that handshake. The checksum of `card.bin` is reported at startup
+  too.
 - `fps_limit` (default `60`): Linux caps the frame rate with MangoHUD, Windows
   uses this. `0` turns the cap off.
 - `width` × `height` is the resolution the game renders at. **Windowed, it has
