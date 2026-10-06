@@ -254,17 +254,8 @@ fn respond(
 /// Says something once. The printer is polled, so a command that keeps
 /// arriving would otherwise fill the log with the same line.
 fn report(message: String) {
-	static REPORTED: Mutex<Vec<String>> = Mutex::new(Vec::new());
-	let Ok(mut reported) = REPORTED.lock() else {
-		return;
-	};
-	if reported.contains(&message) {
-		return;
-	}
-	if reported.len() < 64 {
-		reported.push(message.clone());
-	}
-	platform::log(&message);
+	static REPORTED: report::Reported = report::Reported::new();
+	REPORTED.say(message);
 }
 
 /// Either nothing, or exactly one card: a short buffer is padded and a long

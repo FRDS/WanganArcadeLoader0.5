@@ -13,9 +13,7 @@
 
 use crate::platform::call_game;
 use crate::*;
-use std::collections::HashSet;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Mutex;
 
 /// What everything in the dump was laid out for.
 const ORIGINAL_ASPECT: f32 = 640.0 / 480.0;
@@ -59,21 +57,13 @@ fn widen(left: f32, right: f32, bottom: f32, top: f32, render_aspect: f32) -> Op
 // ------------------------------------------------------------------ reporting
 
 /// Argument sets already reported, so a call the engine makes every frame --
-/// or every sprite -- is logged once. The same shape, and the same reason, as
-/// `files.rs::first_failure`: an early `gl_debug` build without deduplication
-/// produced a 70 MB log in a single run.
-static REPORTED: Mutex<Option<HashSet<String>>> = Mutex::new(None);
-const MAX_REPORTED: usize = 64;
+/// or every sprite -- is logged once. This module is the reason `report.rs`
+/// exists: an early `gl_debug` build without deduplication produced a 70 MB
+/// log in a single run.
+static REPORTED: report::Reported = report::Reported::new();
 
 fn log_once(line: String) {
-	let Ok(mut reported) = REPORTED.lock() else {
-		return;
-	};
-	let reported = reported.get_or_insert_with(HashSet::new);
-	if reported.len() >= MAX_REPORTED || !reported.insert(line.clone()) {
-		return;
-	}
-	platform::log(&line);
+	REPORTED.say(line);
 }
 
 /// How often the engine asks for an orthographic projection. Once a frame or

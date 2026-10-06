@@ -15,6 +15,7 @@ pub mod jamma;
 pub mod opengl;
 pub mod platform;
 pub mod poll;
+pub mod report;
 pub mod res;
 pub mod shader;
 
@@ -258,7 +259,7 @@ unsafe fn own_address() -> Option<i32> {
 		Some(text) => match std::net::Ipv4Addr::from_str(text) {
 			Ok(address) => address,
 			Err(err) => {
-				platform::log(&format!(
+				net_log(format!(
 					"net: local_ip is not an IPv4 address ({err}): {text}"
 				));
 				return None;
@@ -267,14 +268,14 @@ unsafe fn own_address() -> Option<i32> {
 		None => match local_ip_address::local_ip() {
 			Ok(std::net::IpAddr::V4(address)) => address,
 			Ok(std::net::IpAddr::V6(address)) => {
-				platform::log(&format!(
-					"net: this machine's address is IPv6 ({address}), and \
-				                        the game only understands IPv4 -- set local_ip"
+				net_log(format!(
+					"net: this machine's address is IPv6 ({address}), and the game only \
+					 understands IPv4 -- set local_ip"
 				));
 				return None;
 			}
 			Err(err) => {
-				platform::log(&format!("net: cannot find this machine's address: {err}"));
+				net_log(format!("net: cannot find this machine's address: {err}"));
 				return None;
 			}
 		},
@@ -315,19 +316,11 @@ unsafe extern "C" fn get_address(clnet: *mut *mut c_int) -> c_int {
 	ip
 }
 
-/// Says something once. `getAddress` is a getter the game may poll.
+/// Says something once. `getAddress` is a getter the game may poll, so none of
+/// what it reports may repeat per call.
 fn net_log(message: String) {
-	static REPORTED: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
-	let Ok(mut reported) = REPORTED.lock() else {
-		return;
-	};
-	if reported.contains(&message) {
-		return;
-	}
-	if reported.len() < 16 {
-		reported.push(message.clone());
-	}
-	platform::log(&message);
+	static REPORTED: report::Reported = report::Reported::new();
+	REPORTED.say(message);
 }
 
 #[repr(C)]
