@@ -8,6 +8,7 @@
  * Symbols listed in FAKES resolve to specific stand-ins in game.c instead.
  */
 #include <windows.h>
+#include <math.h>
 #include <stdio.h>
 #include <string.h>
 #include <stdbool.h>
@@ -369,6 +370,23 @@ int main(int argc, char **argv)
 		"_ZN3Gap4Math11igMatrix44f32makePerspectiveProjectionRadiansEfffff"))(
 		NULL, 1.0f, 0.1f, 640.0f / 480.0f, 1.0f, 1000.0f);
 	CHECK(perspective_aspect > 1.77f && perspective_aspect < 1.78f, "perspective aspect set to 16:9 (float args)");
+	/* The vertical angle the engine derives, atan(tan(fov/2)/aspect), has to
+	   come out of the widened pair unchanged: 0.3948 rad either way. Scaling
+	   the angle in proportion to the aspect -- 1.0 -> 1.3333 -- would make it
+	   0.4985 instead, and move the 3D out of step with the 2D over it. */
+	float vertical_before = atanf(tanf(1.0f / 2) / (640.0f / 480.0f));
+	float vertical_after = atanf(tanf(perspective_fov / 2) / perspective_aspect);
+	CHECK(fabsf(vertical_after - vertical_before) < 1e-5f && perspective_fov > 1.25f &&
+			  perspective_fov < 1.26f,
+		  "the widened FOV keeps the vertical angle (tangent, not angle, scaled)");
+
+	/* A projection that did not arrive at 4:3 is not ours: this used to have
+	   its FOV divided by 4:3 anyway. */
+	((void (*)(void *, float, float, float, float, float))impl(
+		"_ZN3Gap4Math11igMatrix44f32makePerspectiveProjectionRadiansEfffff"))(
+		NULL, 1.0f, 0.1f, 1.0f, 1.0f, 1000.0f);
+	CHECK(perspective_fov == 1.0f && perspective_aspect == 1.0f,
+		  "a square projection passes through untouched");
 
 	/* The 2D layer is laid out in 640-space; at 16:9 the box has to widen. */
 	((void *(*)(void *, float, float, float, float, float, float))impl(

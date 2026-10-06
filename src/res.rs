@@ -163,6 +163,20 @@ unsafe extern "C" fn set_viewport(
 
 // ---------------------------------------------------------------- projections
 
+/// The horizontal FOV that shows the same world at `render_aspect` as `fov`
+/// showed at 4:3, so widening the screen adds width and nothing else.
+///
+/// The first argument of `makePerspectiveProjectionRadians` is the
+/// **horizontal** angle, and the engine derives the vertical one from it as
+/// `atan(tan(fov / 2) / aspect)`. Scaling the angle in proportion to the
+/// aspect -- which is what this used to do -- therefore changes the vertical
+/// FOV as well, so the 3D drifts out of step with the 2D laid over it. It is
+/// the *tangent* that has to scale: then the vertical angle comes out
+/// bit-identical and only the horizontal grows.
+fn widen_fov(fov: f32, render_aspect: f32) -> f32 {
+	2.0 * ((fov * 0.5).tan() * render_aspect / ORIGINAL_ASPECT).atan()
+}
+
 static mut ORIGINAL_MAKE_PERSPECTIVE: *const () = std::ptr::null();
 unsafe extern "C" fn make_perspective(
 	this: *const c_void,
@@ -172,15 +186,16 @@ unsafe extern "C" fn make_perspective(
 	a4: c_float,
 	a5: c_float,
 ) {
-	let width = CONFIG.width as f32;
-	let height = CONFIG.height as f32;
-	let original_aspect_ratio = ORIGINAL_ASPECT;
-	let new_aspect_ratio = if aspect_ratio == original_aspect_ratio {
-		width / height
+	let render_aspect = CONFIG.width as f32 / CONFIG.height as f32;
+	// Only a projection laid out for the cabinet's 4:3 is ours to widen. This
+	// is a general utility -- the engine builds others through it, and the FOV
+	// used to be rescaled even for those, because the old arithmetic divided
+	// by 4:3 whatever the aspect coming in was.
+	let (new_fov, new_aspect_ratio) = if aspect_ratio == ORIGINAL_ASPECT {
+		(widen_fov(fov, render_aspect), render_aspect)
 	} else {
-		aspect_ratio
+		(fov, aspect_ratio)
 	};
-	let new_fov = fov / original_aspect_ratio * new_aspect_ratio;
 	if CONFIG.res_log {
 		log_once(format!(
 			"res: perspective fov {fov} -> {new_fov}, aspect {aspect_ratio} -> {new_aspect_ratio} \
@@ -287,15 +302,12 @@ unsafe extern "C" fn ortho_d_plane(
 /// Hooks `symbol` and says whether this dump has it. Which overloads exist is
 /// part of what the log is being read for, and a symbol that is missing or
 /// refused leaves a null trampoline, so it has to be said rather than assumed.
-pub(crate) unsafe fn watch(
-	prefix: &str,
-	symbol: &str,
-	func: *const (),
-	what: &str,
-) -> *const () {
+pub(crate) unsafe fn watch(prefix: &str, symbol: &str, func: *const (), what: &str) -> *const () {
 	let original = hook::hook_symbol(symbol, func);
 	if original.is_null() {
-		platform::log(&format!("{prefix}: cannot watch {what}, {symbol} is missing"));
+		platform::log(&format!(
+			"{prefix}: cannot watch {what}, {symbol} is missing"
+		));
 	} else {
 		platform::log(&format!("{prefix}: watching {what}"));
 	}
@@ -355,7 +367,7 @@ pub unsafe fn init() {
 
 #[cfg(test)]
 mod tests {
-	use super::{widen, ORIGINAL_ASPECT};
+	use super::{widen, widen_fov, ORIGINAL_ASPECT};
 
 	/// The two shapes a 4:3 layout actually meets.
 	const SIXTEEN_NINE: f32 = 1280.0 / 720.0;
@@ -380,7 +392,10 @@ mod tests {
 		// The box the engine asked for on hardware, at both aspects.
 		let wide = widen(0.0, 640.0, 480.0, 0.0, SIXTEEN_NINE).expect("the screen box");
 		// Isotropic: the box's own aspect now matches what it is drawn into.
-		assert!((width(wide) / 480.0 - SIXTEEN_NINE).abs() < 0.001, "{wide:?}");
+		assert!(
+			(width(wide) / 480.0 - SIXTEEN_NINE).abs() < 0.001,
+			"{wide:?}"
+		);
 		// ...and the layer has not moved.
 		assert!((centre(wide) - 320.0).abs() < 0.001, "{wide:?}");
 	}
@@ -388,7 +403,10 @@ mod tests {
 	#[test]
 	fn scales_by_the_aspect_and_nothing_else() {
 		let wide = widen(0.0, 640.0, 480.0, 0.0, SIXTEEN_TEN).expect("the screen box");
-		assert!((width(wide) - 480.0 * SIXTEEN_TEN).abs() < 0.001, "{wide:?}");
+		assert!(
+			(width(wide) - 480.0 * SIXTEEN_TEN).abs() < 0.001,
+			"{wide:?}"
+		);
 	}
 
 	#[test]
@@ -418,5 +436,61 @@ mod tests {
 		// Panoramic, and degenerate.
 		assert_eq!(widen(0.0, 1024.0, 256.0, 0.0, SIXTEEN_NINE), None);
 		assert_eq!(widen(0.0, 0.0, 0.0, 0.0, SIXTEEN_NINE), None);
+	}
+
+	/// The vertical angle the engine derives from a horizontal FOV, which is
+	/// the thing widening must not disturb.
+	fn vertical(fov: f32, aspect: f32) -> f32 {
+		((fov * 0.5).tan() / aspect).atan()
+	}
+
+	/// The whole claim, as an assertion: a wider screen shows more at the
+	/// sides and exactly as much top to bottom.
+	#[test]
+	fn widening_the_fov_keeps_the_vertical_angle() {
+		// A 50-degree horizontal FOV, roughly the chase camera's.
+		let fov = 50_f32.to_radians();
+		for aspect in [SIXTEEN_NINE, SIXTEEN_TEN, 2560.0 / 1080.0, 1440.0 / 1080.0] {
+			let wide = widen_fov(fov, aspect);
+			assert!(
+				(vertical(wide, aspect) - vertical(fov, ORIGINAL_ASPECT)).abs() < 1e-6,
+				"vertical FOV moved at {aspect}: {} -> {}",
+				vertical(fov, ORIGINAL_ASPECT),
+				vertical(wide, aspect)
+			);
+			// And the horizontal half-angle's tangent grew by the aspect
+			// ratio's own change, which is what "adds width" means.
+			let grew = (wide * 0.5).tan() / (fov * 0.5).tan();
+			assert!((grew - aspect / ORIGINAL_ASPECT).abs() < 1e-5, "{aspect}");
+		}
+	}
+
+	#[test]
+	fn a_4_3_render_leaves_the_fov_exactly_alone() {
+		for fov in [0.1_f32, 50_f32.to_radians(), 2.0] {
+			assert_eq!(widen_fov(fov, ORIGINAL_ASPECT), fov);
+			assert_eq!(widen_fov(fov, 640.0 / 480.0), fov);
+		}
+	}
+
+	/// What the old arithmetic did, kept as the reason it is gone: scaling the
+	/// angle in proportion to the aspect moves the vertical FOV too, which is
+	/// what pulled the 3D out of step with the 2D laid over it.
+	///
+	/// Measured at a 50-degree horizontal FOV and 16:9: the vertical angle
+	/// goes from 19.27 to 20.24 degrees, a 5.3% change -- small, but a fixed
+	/// 2D layer does not move with it, and it grows with the angle.
+	#[test]
+	fn scaling_the_angle_itself_moves_the_vertical_fov() {
+		let fov = 50_f32.to_radians();
+		let scaled = fov / ORIGINAL_ASPECT * SIXTEEN_NINE;
+		let before = vertical(fov, ORIGINAL_ASPECT);
+		let drift = (vertical(scaled, SIXTEEN_NINE) - before).abs() / before;
+		assert!(
+			drift > 0.05,
+			"the old arithmetic was harmless after all: {drift}"
+		);
+		// It also asked for a wider horizontal angle than the screen gained.
+		assert!(scaled > widen_fov(fov, SIXTEEN_NINE));
 	}
 }
