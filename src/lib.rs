@@ -109,8 +109,9 @@ pub struct Config {
 
 	/// Log the geometry the engine asks for: the screen size it reads out of
 	/// Lua, the viewports, the perspective FOV and every orthographic box, one
-	/// line per distinct set of arguments. Only does anything at a custom
-	/// resolution, since that is when `res.rs` runs at all.
+	/// line per distinct set of arguments. Most of it needs a custom
+	/// resolution, since that is when `res.rs` installs its hooks at all; the
+	/// fixed-function `glOrtho` is watched at any resolution.
 	res_log: bool,
 
 	/// Ask for an OpenGL debug context and log the driver's own messages. The
@@ -299,13 +300,13 @@ unsafe extern "C" fn get_address(clnet: *mut *mut c_int) -> c_int {
 	};
 	let mut net = clnet.byte_offset(offset).read();
 	if net.is_null() {
-		log_once(format!(
+		net_log(format!(
 			"net: clNet+{offset:#x} holds no net struct, trying +{fallback:#x}"
 		));
 		net = clnet.byte_offset(fallback).read();
 	}
 	if net.is_null() {
-		log_once(String::from(
+		net_log(String::from(
 			"net: clNet has no net struct at either offset, so its address is not ours to set",
 		));
 		return ip;
@@ -315,7 +316,7 @@ unsafe extern "C" fn get_address(clnet: *mut *mut c_int) -> c_int {
 }
 
 /// Says something once. `getAddress` is a getter the game may poll.
-fn log_once(message: String) {
+fn net_log(message: String) {
 	static REPORTED: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
 	let Ok(mut reported) = REPORTED.lock() else {
 		return;

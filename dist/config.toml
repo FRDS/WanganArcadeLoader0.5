@@ -57,6 +57,7 @@ shader_mode = "auto"
 #   card_log   every card-printer command; refusals are logged either way
 #   gl_debug   an OpenGL debug context, relaying the driver's own messages
 #   res_log    the screen size, viewports and projections the engine asks for
+#              (most of it only at a custom resolution)
 input_log = false
 cg_log = false
 file_log = false

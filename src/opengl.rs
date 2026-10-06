@@ -1153,6 +1153,16 @@ unsafe fn load_gl_func(func: &str, glfw: &Glfw) {
 		}
 	};
 
+	// One name is interposed rather than redirected outright: the engine builds
+	// the 2D layer's projection through the fixed-function `glOrtho` as well as
+	// through `igMatrix44f`, and only the second is corrected. See
+	// `res::gl_ortho`.
+	let real_func = if func == "glOrtho" && CONFIG.res_log {
+		res::watch_gl_ortho(real_func as *const ()) as *const c_void
+	} else {
+		real_func
+	};
+
 	let real_func = (real_func as usize).to_le_bytes();
 	let mut data = Vec::with_capacity(7);
 	data.push(0xB8);

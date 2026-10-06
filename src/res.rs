@@ -154,11 +154,69 @@ unsafe extern "C" fn set_viewport(
 		);
 	}
 	if CONFIG.res_log {
+		// A viewport larger than what we render into is worth knowing about:
+		// the C++ plugin measured the menu background arriving at twice the
+		// screen size, and `clGraphics::setFsaa()` rendering through a 2x
+		// supersample buffer, either of which would clip a pass to a corner
+		// or move where the middle of the screen is. Neither has been seen
+		// here, and this is how it would be.
+		let oversized = width > CONFIG.width as c_int || height > CONFIG.height as c_int;
 		log_once(format!(
-			"res: setViewport {a1},{a2} {width}x{height} {a5} {a6}"
+			"res: setViewport {a1},{a2} {width}x{height} {a5} {a6}{}",
+			if oversized {
+				format!(
+					" -- larger than the {}x{} we render",
+					CONFIG.width, CONFIG.height
+				)
+			} else {
+				String::new()
+			}
 		));
 	}
 	call_game(ORIGINAL_SET_VIEWPORT, (this, a1, a2, width, height, a5, a6))
+}
+
+// ------------------------------------------------- the fixed-function ortho
+
+static mut ORIGINAL_GL_ORTHO: *const () = std::ptr::null();
+
+/// Stands in front of the game's `glOrtho`, reporting each distinct box.
+///
+/// `clSpriteManager::draw()` builds the same `0,640,480,0` projection twice:
+/// once as a `Gap::Math::igMatrix44f`, which is what the sprite pass renders
+/// with and what `widen` corrects, and once through fixed-function `glOrtho`.
+/// Correcting only the first is right for the sprite pass, but anything the
+/// engine draws through the GL one is still smeared 1.333x at 16:9 -- and
+/// whether it draws anything that way has never been measured. This is how
+/// that gets an answer; if `[0, 640, 480, 0]` turns up here, the same
+/// correction belongs on this path too.
+///
+/// The C++ plugin re-checks and rewrites its patch on every anchored pass,
+/// because its own `load_gl_funcs()` runs at window creation and wipes a patch
+/// made at init. Ours has the same ordering, but the patch is written in one
+/// place, so pointing that one place here is enough and there is nothing to
+/// re-check.
+unsafe extern "C" fn gl_ortho(left: f64, right: f64, bottom: f64, top: f64, near: f64, far: f64) {
+	log_once(format!(
+		"res: glOrtho {left} {right} {bottom} {top} {near} {far}{}",
+		if left == 0.0 && right == 640.0 {
+			" -- the 2D layer's own box, through fixed-function GL"
+		} else {
+			""
+		}
+	));
+	let original: unsafe extern "C" fn(f64, f64, f64, f64, f64, f64) =
+		std::mem::transmute(ORIGINAL_GL_ORTHO);
+	original(left, right, bottom, top, near, far)
+}
+
+/// Takes what the game's `glOrtho` stub would have been pointed at, and gives
+/// back what it should be pointed at instead. Called from `opengl.rs`, which
+/// owns the single site where that patch is written.
+pub(crate) unsafe fn watch_gl_ortho(real: *const ()) -> *const () {
+	ORIGINAL_GL_ORTHO = real;
+	platform::log("res: watching glOrtho");
+	gl_ortho as *const ()
 }
 
 // ---------------------------------------------------------------- projections
