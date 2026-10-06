@@ -227,6 +227,22 @@ fn widen_fov(fov: f32, aspect: f32) -> f32 {
 	2.0 * ((fov * 0.5).tan() * aspect / ORIGINAL_ASPECT).atan()
 }
 
+/// Whether two aspect ratios are the same one.
+///
+/// Deliberately not `==`. The engine works its own aspect out from the screen
+/// size we hand Lua as a double, so the value arriving here has been through a
+/// division and a narrowing we did not do -- and `1280.0 / 720.0` in f64 then
+/// narrowed need not be the f32 `1280f32 / 720f32`. An exact comparison that
+/// misses means the FOV is silently left alone and the world renders cropped,
+/// with nothing but a `res_log` line reading `fov X -> X` to say so, which is
+/// exactly how the first attempt at this hook failed. The tolerance is
+/// relative because these are ratios: 1e-4 is far tighter than the gap between
+/// any two aspect ratios anyone ships (4:3 to 16:10 is 7%) and far looser than
+/// any rounding.
+fn is_aspect(a: f32, b: f32) -> bool {
+	(a - b).abs() <= 1e-4 * b.abs()
+}
+
 static mut ORIGINAL_MAKE_PERSPECTIVE: *const () = std::ptr::null();
 unsafe extern "C" fn make_perspective(
 	this: *const c_void,
@@ -244,7 +260,8 @@ unsafe extern "C" fn make_perspective(
 	// resolution. It still has to arrive as one of the two -- this is a
 	// general utility and the engine builds its own projections through it,
 	// which are authored for the aspect they ask for and are not ours.
-	let from_the_screen = aspect_ratio == ORIGINAL_ASPECT || aspect_ratio == render_aspect;
+	let from_the_screen =
+		is_aspect(aspect_ratio, ORIGINAL_ASPECT) || is_aspect(aspect_ratio, render_aspect);
 	let (new_fov, new_aspect_ratio) = if from_the_screen {
 		(widen_fov(fov, render_aspect), render_aspect)
 	} else {
@@ -421,7 +438,7 @@ pub unsafe fn init() {
 
 #[cfg(test)]
 mod tests {
-	use super::{widen, widen_fov, ORIGINAL_ASPECT};
+	use super::{is_aspect, widen, widen_fov, ORIGINAL_ASPECT};
 
 	/// The two shapes a 4:3 layout actually meets.
 	const SIXTEEN_NINE: f32 = 1280.0 / 720.0;
@@ -490,6 +507,30 @@ mod tests {
 		// Panoramic, and degenerate.
 		assert_eq!(widen(0.0, 1024.0, 256.0, 0.0, SIXTEEN_NINE), None);
 		assert_eq!(widen(0.0, 0.0, 0.0, 0.0, SIXTEEN_NINE), None);
+	}
+
+	/// The aspect arriving from the engine has been through a division and a
+	/// narrowing we did not do, so it is matched with a tolerance -- but one
+	/// far tighter than the gap between any two real aspect ratios.
+	#[test]
+	fn recognises_an_aspect_ratio_without_demanding_the_same_bits() {
+		assert!(is_aspect(ORIGINAL_ASPECT, 640.0 / 480.0));
+		assert!(is_aspect(SIXTEEN_NINE, 1280.0 / 720.0));
+		// The same ratio by another route, as the engine would arrive at it:
+		// computed as a double and narrowed on the way in.
+		assert!(is_aspect((1280.0_f64 / 720.0) as f32, SIXTEEN_NINE));
+		assert!(is_aspect((4.0_f64 / 3.0) as f32, ORIGINAL_ASPECT));
+		// A few last bits out is still the same ratio.
+		assert!(is_aspect(SIXTEEN_NINE + f32::EPSILON * 8.0, SIXTEEN_NINE));
+
+		// Ratios that are genuinely different, including the closest pair
+		// anyone ships -- 16:9 against 16:10 is 11%.
+		assert!(!is_aspect(SIXTEEN_TEN, SIXTEEN_NINE));
+		assert!(!is_aspect(ORIGINAL_ASPECT, SIXTEEN_NINE));
+		assert!(!is_aspect(1.0, ORIGINAL_ASPECT));
+		assert!(!is_aspect(2560.0 / 1080.0, SIXTEEN_NINE));
+		// 640x448, the engine's own other box.
+		assert!(!is_aspect(640.0 / 448.0, ORIGINAL_ASPECT));
 	}
 
 	/// The vertical angle the engine derives from a horizontal FOV, which is
