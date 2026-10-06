@@ -86,20 +86,21 @@ struct Reply {
 }
 
 impl Reply {
-	/// Finished, healthy, nothing in the slot -- the answer to anything that
-	/// needs no emulation.
-	fn ok() -> Self {
+	/// Finished, with these three status bytes and nothing else to do.
+	fn status(s1: u8, s2: u8, s3: u8) -> Self {
 		Reply {
-			s1: ST_NO_CARD,
-			s2: ST_NORMAL,
-			s3: ST_NORMAL,
+			s1,
+			s2,
+			s3,
 			serve: false,
 			save: false,
 		}
 	}
 
-	fn status(self, s1: u8, s2: u8, s3: u8) -> Self {
-		Reply { s1, s2, s3, ..self }
+	/// Finished, healthy, nothing in the slot -- the answer to anything that
+	/// needs no emulation.
+	fn ok() -> Self {
+		Reply::status(ST_NO_CARD, ST_NORMAL, ST_NORMAL)
 	}
 }
 
@@ -148,9 +149,9 @@ fn respond(
 		// An empty payload is legal -- the command may carry none at all.
 		DISPENSECARD => {
 			if payload.first() == Some(&0x32) {
-				Reply::ok().status(ST_NO_CARD, ST_NORMAL, 0x37)
+				Reply::status(ST_NO_CARD, ST_NORMAL, 0x37)
 			} else {
-				Reply::ok().status(0x33, ST_NORMAL, ST_NORMAL)
+				Reply::status(0x33, ST_NORMAL, ST_NORMAL)
 			}
 		}
 
@@ -158,24 +159,24 @@ fn respond(
 			// `payload[0] == 0x32` is a presence query, not a read.
 			if payload.first() == Some(&0x32) {
 				if card.is_empty() {
-					return Reply::ok().status(ST_NO_CARD, ST_NORMAL, ST_NO_DATA);
+					return Reply::status(ST_NO_CARD, ST_NORMAL, ST_NO_DATA);
 				}
-				return Reply::ok().status(ST_CARD_IN, ST_NORMAL, ST_NORMAL);
+				return Reply::status(ST_CARD_IN, ST_NORMAL, ST_NORMAL);
 			}
 			if card.len() < CARD_SIZE {
 				// Report an empty reader rather than read out of bounds.
-				return Reply::ok().status(ST_NO_CARD, ST_NORMAL, ST_NO_DATA);
+				return Reply::status(ST_NO_CARD, ST_NORMAL, ST_NO_DATA);
 			}
 			Reply {
 				serve: true,
-				..Reply::ok().status(ST_CARD_IN, ST_NORMAL, ST_NORMAL)
+				..Reply::status(ST_CARD_IN, ST_NORMAL, ST_NORMAL)
 			}
 		}
 
 		// `payload[0..3]` is a header whose third byte selects the tracks;
 		// the track data follows it.
 		WRITE => {
-			let reply = Reply::ok().status(ST_CARD_IN, ST_NORMAL, ST_NORMAL);
+			let reply = Reply::status(ST_CARD_IN, ST_NORMAL, ST_NORMAL);
 			let Some(&selector) = payload.get(2) else {
 				report(format!(
 					"card: WRITE with no track selector ({} payload bytes), ignored",
@@ -266,14 +267,56 @@ fn report(message: String) {
 	platform::log(&message);
 }
 
-/// Reads `card.bin`, padding a short card to full size. `None` if there isn't
-/// one.
-fn read_card_file() -> Option<Vec<u8>> {
-	let mut card = std::fs::read("card.bin").ok()?;
-	if !card.is_empty() && card.len() < CARD_SIZE {
-		card.resize(CARD_SIZE, 0);
+/// Either nothing, or exactly one card: a short buffer is padded and a long
+/// one cut.
+///
+/// Both halves matter because `save_card_file` writes only an exactly
+/// 207-byte buffer. A `card.bin` that is some other length -- appended to, or
+/// written by something with a different idea of the format -- would otherwise
+/// load and serve happily while every save for the rest of the session was
+/// refused with nothing but one line to say why.
+fn one_card(mut card: Vec<u8>) -> Vec<u8> {
+	if card.is_empty() || card.len() == CARD_SIZE {
+		return card;
 	}
-	Some(card)
+	report(format!(
+		"card: card.bin is {} bytes, using {CARD_SIZE} of it",
+		card.len()
+	));
+	card.resize(CARD_SIZE, 0);
+	card
+}
+
+/// Reads `card.bin`. `None` if there isn't one.
+fn read_card_file() -> Option<Vec<u8>> {
+	Some(one_card(std::fs::read("card.bin").ok()?))
+}
+
+/// Loads `card.bin` into the reader. `what` names the occasion, since this is
+/// both the boot load and the CARD_INSERT binding; the message is not
+/// deduplicated because a player pressing the key wants an answer every time.
+unsafe fn load_card(what: &str) {
+	match read_card_file() {
+		Some(card) => {
+			platform::log(&format!(
+				"card: {what} card.bin, {} bytes, checksum {}",
+				card.len(),
+				if is_valid(&card) {
+					"matches"
+				} else {
+					"does not match"
+				}
+			));
+			*CARD_DATA.lock().unwrap_or_else(|error| error.into_inner()) = card;
+		}
+		None => platform::log(&format!("card: no card.bin to {what}")),
+	}
+}
+
+/// Puts the card back in the reader, for the CARD_INSERT binding. The printer
+/// answers READ out of this buffer, so this is the same lock it takes.
+pub unsafe fn insert() {
+	load_card("inserted");
 }
 
 /// Flushes the buffer, but only when it is a whole card. Refusing a short one
@@ -335,7 +378,7 @@ unsafe extern "C" fn exec(printer: *mut u32) {
 		payload.push(request.byte_add(i as usize).read());
 	}
 
-	let reply = {
+	let (reply, to_save) = {
 		let mut card = CARD_DATA.lock().unwrap_or_else(|error| error.into_inner());
 		let reply = respond(command, &payload, &mut card, &read_card_file);
 		if CONFIG.card_log {
@@ -368,21 +411,27 @@ unsafe extern "C" fn exec(printer: *mut u32) {
 				std::ptr::copy_nonoverlapping(card.as_ptr(), write_buf.byte_add(6), CARD_SIZE);
 			}
 		}
-		if reply.save {
-			save_card_file(&card);
-		}
-		reply
+		// Taken out from under the lock, so the disk write below does not
+		// block whoever else wants the card.
+		let to_save = reply.save.then(|| card.clone());
+		(reply, to_save)
 	};
+	if let Some(card) = to_save {
+		save_card_file(&card);
+	}
 
-	// The command word first: everything below it is the status the game reads
-	// once it sees the command has finished.
+	// The status before the command word, because the command word is what the
+	// game polls to decide the status is worth reading: `startSequence()`
+	// zeroes s1/s2/s3 before every command, and a reader that saw the 0 here
+	// first would read those zeroes, fail `chkNoError()` and draw the card
+	// error. The connect error goes with them -- a failed `initSerial()`
+	// latches it, and `chkNoError()` wants it non-negative.
+	let status = printer as *mut u8;
+	status.byte_add(0x04).write(reply.s1);
+	status.byte_add(0x05).write(reply.s2);
+	status.byte_add(0x06).write(reply.s3);
+	(status.byte_add(0x1c) as *mut i32).write(0);
 	printer.write(0);
-	let printer = printer as *mut u8;
-	printer.byte_add(0x04).write(reply.s1);
-	printer.byte_add(0x05).write(reply.s2);
-	printer.byte_add(0x06).write(reply.s3);
-	// Clear any connect error latched by a failed initSerial().
-	(printer.byte_add(0x1c) as *mut i32).write(0);
 }
 
 fn command_name(command: u8) -> &'static str {
@@ -452,16 +501,8 @@ unsafe extern "C" fn service_result(this: *const c_void) -> c_int {
 }
 
 pub unsafe fn init() {
-	// Load a saved card so a READ right after boot has something to serve.
-	if let Some(card) = read_card_file() {
-		let valid = is_valid(&card);
-		platform::log(&format!(
-			"card: card.bin is {} bytes, checksum {}",
-			card.len(),
-			if valid { "matches" } else { "does not match" }
-		));
-		*CARD_DATA.lock().unwrap() = card;
-	}
+	// A saved card up front, so a READ right after boot has something to serve.
+	load_card("loaded");
 
 	hook::hook_symbol("_ZN13clCardPrinter4execEv", exec as *const ());
 
@@ -680,6 +721,44 @@ mod tests {
 		let mut nothing = Vec::new();
 		assert!(respond(WRITE, &payload, &mut nothing, &nothing_saved).save);
 		assert_eq!(nothing.len(), CARD_SIZE);
+	}
+
+	/// Whatever `card.bin` holds, what the rest of the module sees is nothing
+	/// or exactly one card -- otherwise it loads and serves while every save
+	/// is refused for being the wrong length.
+	#[test]
+	fn a_card_file_is_padded_or_cut_to_one_card() {
+		assert!(
+			one_card(Vec::new()).is_empty(),
+			"invented a card from nothing"
+		);
+		assert_eq!(one_card(vec![1; CARD_SIZE]), vec![1; CARD_SIZE]);
+
+		let short = one_card(vec![1; 0x45]);
+		assert_eq!(short.len(), CARD_SIZE);
+		assert_eq!(&short[..0x45], &[1; 0x45], "padding overwrote track 1");
+		assert_eq!(short[0x45], 0);
+
+		let long = one_card(vec![1; CARD_SIZE + 93]);
+		assert_eq!(long.len(), CARD_SIZE);
+		assert!(long.iter().all(|byte| *byte == 1), "cut the wrong end off");
+	}
+
+	/// A partial write onto an empty buffer still ends up a whole card, so the
+	/// save that follows it is not refused for its length.
+	#[test]
+	fn a_partial_write_onto_nothing_still_makes_one_card() {
+		let mut buffer = Vec::new();
+		assert!(
+			respond(
+				WRITE,
+				&write_command(0x30, 0x45),
+				&mut buffer,
+				&nothing_saved
+			)
+			.save
+		);
+		assert_eq!(buffer.len(), CARD_SIZE);
 	}
 
 	#[test]

@@ -51,13 +51,21 @@ fi
 # Again with no keyconfig.toml, which used to be fatal: read_to_string().unwrap()
 # before a window existed to say why. The shipped bindings are compiled in for
 # exactly this case, so every check above must still pass.
-echo "--- again with no keyconfig.toml"
-rm -f keyconfig.toml card.bin wal_3dxp.log
+#
+# And with a card.bin that is the wrong length, which used to load and serve
+# while every save was refused for not being exactly 207 bytes.
+echo "--- again with no keyconfig.toml and a 300-byte card.bin"
+rm -f keyconfig.toml wal_3dxp.log
+head -c 300 /dev/zero > card.bin
 wine mockline.exe wal_3dxp.dll 2>&1 | tr -d '\r' > defaults.txt || true
 grep -q "HOST RESULT: ALL CHECKS PASSED" defaults.txt ||
 	{ echo "FAIL: the loader does not boot without keyconfig.toml"; status=1; }
 grep -q "using the shipped bindings" wal_3dxp.log ||
 	{ echo "FAIL: nothing said about falling back to the shipped bindings"; status=1; }
+grep -q "card.bin is 300 bytes, using 207 of it" wal_3dxp.log ||
+	{ echo "FAIL: the oversized card.bin was not cut down"; status=1; }
+[ "$(stat -c %s card.bin)" = "207" ] ||
+	{ echo "FAIL: a write over an oversized card.bin did not save 207 bytes"; status=1; }
 echo "no keyconfig.toml: $(grep -c 'HOST PASS' defaults.txt) checks still pass"
 
 exit $status

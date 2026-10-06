@@ -35,13 +35,12 @@ unsafe extern "C" fn handle_inputs(data: *mut u32) {
 	sdl.update();
 
 	if sdl.is_tapped(&keyconfig.card_insert) {
-		if let Ok(card) = std::fs::read("card.bin") {
-			let card_data = card::CARD_DATA.get_mut().unwrap();
-			card_data.clear();
-			card_data.extend(card);
-		} else {
-			println!("Cannot open card.bin");
-		}
+		// Through `card.rs`, so this goes through the same loader the printer
+		// uses -- padded or cut to one card -- and takes the same lock. It
+		// used to read the file itself and reach the buffer with `get_mut()`,
+		// which takes no lock at all, so whether the printer could be holding
+		// it did not come up.
+		card::insert();
 	}
 
 	data.byte_add(0x24).write(0);
