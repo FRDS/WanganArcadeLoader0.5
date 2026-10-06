@@ -570,9 +570,6 @@ pub(crate) unsafe fn init() {
 	GAME_VERSION = rom_info.map_or_else(default_gameversion, GameVersion::from);
 
 	platform::init();
-	// Read the game's symbols up front: the crash reporter needs them to name
-	// a function, and an exception handler is no place to open a file.
-	elfsym::load();
 	// Before the engine reads them, so the fixed files are the ones it loads.
 	shader::ensure_portable(CONFIG.shader_mode);
 
@@ -588,7 +585,6 @@ pub(crate) unsafe fn init() {
 	hook::hook_symbol("hasp_logout", undachi as *const ());
 	hook::hook_symbol("hasp_read", hasp_read as *const ());
 	hook::hook_symbol("hasp_write", undachi as *const ());
-	hook::hook_symbol("hasp_get_rtc", undachi as *const ());
 	hook::hook_symbol("hasp_hasptime_to_datetime", undachi as *const ());
 	hook::hook_symbol("_ZNK6clHasp7isAvailEv", adachi as *const ());
 

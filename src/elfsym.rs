@@ -35,8 +35,9 @@ const STT_FUNC: u8 = 2;
 const SANE_SECTION: u32 = 64 << 20;
 
 /// Where the loader looks, in order. `start.bat` runs from the game folder, so
-/// the first one is the usual answer.
-const CANDIDATES: [&str; 3] = ["main", "./main", "../main"];
+/// the first one is the usual answer; the second is for a loader started from
+/// a subdirectory of it.
+const CANDIDATES: [&str; 2] = ["main", "../main"];
 
 struct Function {
 	address: u32,

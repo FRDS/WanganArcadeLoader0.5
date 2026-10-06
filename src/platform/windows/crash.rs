@@ -82,6 +82,12 @@ pub fn install() {
 			crate::wal_log!("crash handler not installed");
 		}
 	}
+	// The game's symbols, so a report can name a function. Read here rather
+	// than from `init()` because this is the only thing that reads them --
+	// there is no crash reporter on Linux, and the symbol table is a few MB --
+	// and read now rather than on demand because an exception handler is no
+	// place to open a file.
+	crate::elfsym::load();
 }
 
 fn describe(code: u32) -> Option<&'static str> {

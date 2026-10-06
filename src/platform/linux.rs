@@ -107,11 +107,12 @@ unsafe extern "C" fn sigaction() -> c_int {
 
 #[no_mangle]
 unsafe extern "C" fn system(command: *const c_char) -> c_int {
-	let cstr = CStr::from_ptr(command);
-	let str = cstr.to_str().unwrap();
+	// Lossy rather than `unwrap`: a command that is not UTF-8 is a command we
+	// do not run, not a reason to end the process.
+	let text = CStr::from_ptr(command).to_string_lossy().into_owned();
 
-	if !CONFIG.block_sudo || str.starts_with("find") {
-		let command = str.replace("/tmp/", "./tmp/");
+	if !CONFIG.block_sudo || text.starts_with("find") {
+		let command = text.replace("/tmp/", "./tmp/");
 		let command = CString::new(command).unwrap();
 
 		let system = CString::new("system").unwrap();
@@ -128,7 +129,9 @@ unsafe extern "C" fn system(command: *const c_char) -> c_int {
 		setenv(preload.as_ptr(), empty.as_ptr(), 1);
 		system(command.as_ptr())
 	} else {
-		dbg!(str);
+		// What `system.rs` says on the Windows side, rather than a `dbg!` of
+		// the command with a file and line in front of it.
+		log(&format!("system({text}): unhandled command, ignored"));
 		0
 	}
 }
