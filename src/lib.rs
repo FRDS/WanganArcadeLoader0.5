@@ -363,7 +363,8 @@ impl From<&RomInfo> for GameVersion {
 	}
 }
 
-/// `W3P100-2-0-0-A01` -- the Export 3DX+ dump -- into its parts. `None` for
+/// `W3P100-2-NA-DAT0-B02` -- the Export 3DX+ dump, read off it at boot --
+/// into its parts. `None` for
 /// anything that is not that shape, which is the caller's cue to say so: every
 /// version-gated offset in the loader reads what this returns, and an
 /// unrecognised name silently takes the non-WMMT3 branch of each.
@@ -628,14 +629,16 @@ pub(crate) unsafe fn init() {
 mod tests {
 	use super::*;
 
-	/// The dump every hardware run in `docs/ROADMAP.md` was made on.
+	/// The dump every hardware run in `docs/ROADMAP.md` was made on, read off
+	/// it at boot. The two middle fields are not the `0-0` an earlier note
+	/// guessed at, which is the reason this test exists at all.
 	#[test]
 	fn reads_the_export_3dxp_revision() {
-		let version = parse_revision("W3P100-2-0-0-A01").expect("the Export 3DX+ name");
+		let version = parse_revision("W3P100-2-NA-DAT0-B02").expect("the Export 3DX+ name");
 		assert!(version.major == GameMajor::W3P);
 		assert!(version.region == GameRegion::EN2);
-		assert!(version.minor == GameMinor::A);
-		assert_eq!(version.revision, 1);
+		assert!(version.minor == GameMinor::B);
+		assert_eq!(version.revision, 2);
 	}
 
 	#[test]
@@ -687,7 +690,7 @@ mod tests {
 		// The whole field used, so there is no terminator to find.
 		assert!(GameVersion::from(&named(&[b'A'; 32])).major == GameMajor::Unknown);
 		// Terminated, with rubbish after it that is none of our business.
-		let mut padded = *b"W3P100-2-0-0-A01\0\xff\xfe";
+		let mut padded = *b"W3P100-2-NA-DAT0-B02\0\xff\xfe";
 		assert!(GameVersion::from(&named(&mut padded)).major == GameMajor::W3P);
 		// Terminated, but not text.
 		assert!(GameVersion::from(&named(b"\xff\xfe\0")).major == GameMajor::Unknown);

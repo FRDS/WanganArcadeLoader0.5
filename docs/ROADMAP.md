@@ -59,6 +59,34 @@ Also proven, 2026-10-04/05:
   was still going when the run was stopped from outside. One other ending
   survives — see the known gaps.
 
+**What one boot run settled, 2026-10-06** (1280x720, `res_log` and `card_log`
+on, Iris Xe desktop, 22 seconds of attract at a flat 60fps, no crash):
+
+- **The revision name is `W3P100-2-NA-DAT0-B02`.** Earlier notes here and in
+  the tests said `W3P100-2-0-0-A01`, which was a guess that happened to parse.
+  The two middle fields are `NA` and `DAT0`, and the dump is revision **B02**,
+  not A01. Everything that gates on the revision reads this, so it is worth
+  having right.
+- **`elfsym` reads 47,937 functions from `main`** in the real process, the same
+  count `readelf --dyn-syms` gives. There is no `.symtab` in that dump at all.
+- **The card checksum assumption is right.** The installed `card.bin` is 207
+  bytes and its stored CRC-16/CCITT-FALSE over bytes `0..0xCD` matches, which
+  confirms the layout read out of `clV386CardData` against a card the game
+  itself wrote, not just against a synthetic one.
+- **The engine asks for the perspective at the *render* aspect, not 4:3.** It
+  arrives as `fov 0.7854 aspect 1.7778` at 1280x720, because the engine works
+  the aspect out from the `SCREEN_XSIZE`/`SCREEN_YSIZE` that `res.rs` hands
+  Lua. So the FOV has to be widened on that basis -- gating it on 4:3 arriving
+  means never widening anything at a custom resolution, which is a mistake this
+  run caught. 45 degrees becomes 57.8, where the old arithmetic said 60.
+- **The fixed-function `glOrtho` carries the same 2D box**, `[0, 640, 480, 0,
+  -1, 1]`, and is not corrected. What the engine draws through it is the open
+  question; the box being identical means it is not a different projection,
+  just a second copy of the same one.
+- **No viewport larger than the render size** turned up in attract, so the 2x
+  menu-background viewport and the FSAA 2x buffer the C++ loader documents are
+  not on this path. Still worth the report for a race.
+
 Still unverified:
 
 - **How the widescreen correction looks.** The arithmetic is unit-tested and
@@ -133,6 +161,14 @@ so the HUD occupies the middle 960 of 1280 pixels and anything anchored to an
 edge sits inward of it. A race may also ask for boxes the attract screens do
 not; `res_log` is how to see them, and `widen` leaves anything it does not
 recognise alone.
+
+Also open, and measured on 2026-10-06: the engine builds **the same box a
+second time through the fixed-function `glOrtho`**, which is reported but not
+corrected. The C++ loader widens both and says widening only the GL one has no
+effect on the geometry, which reads as the matrix one being what the sprite
+pass renders with -- so the question is what else is drawn while that GL state
+is current. If it turns out to be the full-width background art, widening it is
+not the answer anyway; stretching is (see the skip-list discussion below).
 
 ### What tatoohanz's widescreen patcher turned out to be
 

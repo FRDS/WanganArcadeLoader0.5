@@ -41,7 +41,7 @@ wine mockline.exe wal_3dxp.dll 2>&1 | tr -d '\r' | tee output.txt || true
 grep -q "HOST RESULT: ALL CHECKS PASSED" output.txt || status=1
 # The revision has to be read before any hook is installed, since a hook that
 # gates on it reads it while installing.
-grep -q "game revision W3P100-2-0-0-A01" wal_3dxp.log ||
+grep -q "game revision W3P100-2-NA-DAT0-B02" wal_3dxp.log ||
 	{ echo "FAIL: gRomInfo was not read into a known revision"; status=1; }
 if [ -f wal_3dxp.log ]; then
 	echo "--- wal_3dxp.log"
