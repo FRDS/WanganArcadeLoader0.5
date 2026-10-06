@@ -435,8 +435,12 @@ pub(crate) unsafe fn init() {
 
 	// Really what I should do is implement a custom serde::Deserialize for KeyBindings
 	// but serdes documentation is really confusing when it comes to this
-	#[derive(serde::Deserialize)]
-	#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+	//
+	// `default` on each field so one missing line unbinds one action instead of
+	// failing the whole file -- which used to abort the process, with no window
+	// and nothing on screen to say why.
+	#[derive(Default, serde::Deserialize)]
+	#[serde(default, rename_all = "SCREAMING_SNAKE_CASE")]
 	struct KeyConfigTemp {
 		test: Vec<String>,
 		service: Vec<String>,
@@ -464,34 +468,68 @@ pub(crate) unsafe fn init() {
 		wheel_right: Vec<String>,
 	}
 
-	let toml = std::fs::read_to_string("keyconfig.toml").unwrap();
-	let keyconfig: KeyConfigTemp = toml::from_str(&toml).unwrap();
-	let keyconfig = KeyConfig {
-		test: parse_keybinding(keyconfig.test),
-		service: parse_keybinding(keyconfig.service),
-		card_insert: parse_keybinding(keyconfig.card_insert),
-
-		gear_next: parse_keybinding(keyconfig.gear_next),
-		gear_previous: parse_keybinding(keyconfig.gear_previous),
-		gear_neutral: parse_keybinding(keyconfig.gear_neutral),
-		gear_first: parse_keybinding(keyconfig.gear_first),
-		gear_second: parse_keybinding(keyconfig.gear_second),
-		gear_third: parse_keybinding(keyconfig.gear_third),
-		gear_fourth: parse_keybinding(keyconfig.gear_fourth),
-		gear_fifth: parse_keybinding(keyconfig.gear_fifth),
-		gear_sixth: parse_keybinding(keyconfig.gear_sixth),
-		gear_up: parse_keybinding(keyconfig.gear_up),
-		gear_left: parse_keybinding(keyconfig.gear_left),
-		gear_down: parse_keybinding(keyconfig.gear_down),
-		gear_right: parse_keybinding(keyconfig.gear_right),
-
-		perspective: parse_keybinding(keyconfig.perspective),
-		intrude: parse_keybinding(keyconfig.intrude),
-		gas: parse_keybinding(keyconfig.gas),
-		brake: parse_keybinding(keyconfig.brake),
-		wheel_left: parse_keybinding(keyconfig.wheel_left),
-		wheel_right: parse_keybinding(keyconfig.wheel_right),
+	// The shipped file, as the fallback for a keyconfig.toml that is missing or
+	// unreadable: the documented default bindings are better than none, and
+	// `shipped_keyconfig_parses` already guarantees every name in it parses.
+	const SHIPPED_KEYCONFIG: &str = include_str!("../dist/keyconfig.toml");
+	let shipped = || toml::from_str::<KeyConfigTemp>(SHIPPED_KEYCONFIG).unwrap_or_default();
+	let keyconfig = match std::fs::read_to_string("keyconfig.toml") {
+		Ok(toml) => match toml::from_str(&toml) {
+			Ok(keyconfig) => keyconfig,
+			Err(err) => {
+				platform::log(&format!(
+					"input: keyconfig.toml not loaded, using the shipped bindings: {err}"
+				));
+				shipped()
+			}
+		},
+		Err(err) => {
+			platform::log(&format!(
+				"input: cannot read keyconfig.toml, using the shipped bindings: {err}"
+			));
+			shipped()
+		}
 	};
+
+	// An action nothing parsed for is an action the player cannot reach, and a
+	// mistyped key name reads as an absent one, so say which.
+	let mut unbound: Vec<&str> = Vec::new();
+	let mut bind = |name: &'static str, keys: Vec<String>| {
+		let parsed = parse_keybinding(keys);
+		if parsed.is_empty() {
+			unbound.push(name);
+		}
+		parsed
+	};
+	let keyconfig = KeyConfig {
+		test: bind("TEST", keyconfig.test),
+		service: bind("SERVICE", keyconfig.service),
+		card_insert: bind("CARD_INSERT", keyconfig.card_insert),
+
+		gear_next: bind("GEAR_NEXT", keyconfig.gear_next),
+		gear_previous: bind("GEAR_PREVIOUS", keyconfig.gear_previous),
+		gear_neutral: bind("GEAR_NEUTRAL", keyconfig.gear_neutral),
+		gear_first: bind("GEAR_FIRST", keyconfig.gear_first),
+		gear_second: bind("GEAR_SECOND", keyconfig.gear_second),
+		gear_third: bind("GEAR_THIRD", keyconfig.gear_third),
+		gear_fourth: bind("GEAR_FOURTH", keyconfig.gear_fourth),
+		gear_fifth: bind("GEAR_FIFTH", keyconfig.gear_fifth),
+		gear_sixth: bind("GEAR_SIXTH", keyconfig.gear_sixth),
+		gear_up: bind("GEAR_UP", keyconfig.gear_up),
+		gear_left: bind("GEAR_LEFT", keyconfig.gear_left),
+		gear_down: bind("GEAR_DOWN", keyconfig.gear_down),
+		gear_right: bind("GEAR_RIGHT", keyconfig.gear_right),
+
+		perspective: bind("PERSPECTIVE", keyconfig.perspective),
+		intrude: bind("INTRUDE", keyconfig.intrude),
+		gas: bind("GAS", keyconfig.gas),
+		brake: bind("BRAKE", keyconfig.brake),
+		wheel_left: bind("WHEEL_LEFT", keyconfig.wheel_left),
+		wheel_right: bind("WHEEL_RIGHT", keyconfig.wheel_right),
+	};
+	if !unbound.is_empty() {
+		platform::log(&format!("input: nothing bound to {}", unbound.join(", ")));
+	}
 	KEYCONFIG = Some(keyconfig);
 
 	platform::init();
@@ -537,9 +575,11 @@ pub(crate) unsafe fn init() {
 	// Measurement only, and only when asked for; see the module comment.
 	hud::init();
 
-	let rom_info = hook::get_symbol("gRomInfo") as *const RomInfo;
-	let rom_info = rom_info.as_ref().unwrap();
-	let version = rom_info.into();
+	let rom_info = (hook::get_symbol("gRomInfo") as *const RomInfo).as_ref();
+	if rom_info.is_none() {
+		platform::log("gRomInfo is missing, so the game revision stays unknown");
+	}
+	let version = rom_info.map_or_else(default_gameversion, |rom_info| rom_info.into());
 	GAME_VERSION = version;
 	platform::load_plugins(&version);
 }

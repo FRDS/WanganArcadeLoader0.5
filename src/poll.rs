@@ -134,6 +134,13 @@ pub struct KeyBindings {
 	keys: Vec<KeyBinding>,
 }
 
+impl KeyBindings {
+	/// Whether nothing is bound, i.e. the action cannot be reached.
+	pub fn is_empty(&self) -> bool {
+		self.keys.is_empty()
+	}
+}
+
 const MAPPINGS: Map<&str, KeyBinding> = phf_map! {
 	"F1" => KeyBinding::Keycode(Keycode::F1),
 	"F2" => KeyBinding::Keycode(Keycode::F2),
@@ -228,6 +235,9 @@ const MAPPINGS: Map<&str, KeyBinding> = phf_map! {
 	"SDL_RTRIGGER_UP" => KeyBinding::Axis(Axis::RightTriggerUp),
 };
 
+/// Turns the names in `keyconfig.toml` into bindings. A name that means
+/// nothing is reported and skipped rather than fatal: one typo used to end the
+/// process before the window existed, and the rest of the file is still good.
 pub fn parse_keybinding(toml: Vec<String>) -> KeyBindings {
 	let mut keybindings = KeyBindings { keys: Vec::new() };
 	for value in toml {
@@ -236,11 +246,12 @@ pub fn parse_keybinding(toml: Vec<String>) -> KeyBindings {
 		} else if let Some(keybinding) = parse_joy_binding(&value) {
 			keybindings.keys.push(keybinding);
 		} else {
-			panic!(
-				"Incorrect keybinding {value}. Raw joystick bindings look like JOY_BUTTON3, \
-				 JOY_AXIS0+, JOY_AXIS0-, JOY_AXIS2_FULL, JOY_AXIS2_FULL_INV or JOY_HAT0_UP, \
-				 optionally with a device number: JOY1_AXIS2_FULL_INV"
-			);
+			crate::platform::log(&format!(
+				"input: ignoring the keybinding {value}, which is not a name I know. Raw \
+				 joystick bindings look like JOY_BUTTON3, JOY_AXIS0+, JOY_AXIS0-, \
+				 JOY_AXIS2_FULL, JOY_AXIS2_FULL_INV or JOY_HAT0_UP, optionally with a device \
+				 number: JOY1_AXIS2_FULL_INV"
+			));
 		}
 	}
 	keybindings
@@ -824,10 +835,19 @@ mod tests {
 		assert_eq!(keys.keys.len(), 3);
 	}
 
+	/// A name that means nothing is dropped, and the bindings beside it in the
+	/// same list still work -- a typo must not cost the whole keyconfig, let
+	/// alone the process.
 	#[test]
-	#[should_panic(expected = "Incorrect keybinding JOY_WHEEL")]
-	fn rejects_unknown_names() {
-		parse_keybinding(vec!["JOY_WHEEL".into()]);
+	fn drops_unknown_names_and_keeps_the_rest() {
+		let keys = parse_keybinding(vec![
+			"JOY_WHEEL".into(),
+			"W".into(),
+			"JOY_AXIS".into(),
+			"SDL_A".into(),
+		]);
+		assert_eq!(keys.keys.len(), 2);
+		assert!(parse_keybinding(vec!["JOY_WHEEL".into()]).is_empty());
 	}
 
 	#[test]
