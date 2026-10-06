@@ -249,35 +249,84 @@ unsafe extern "C" fn cl_main(log: *mut *mut ()) {
 	log.write(hook::get_symbol("_ZSt4cout"));
 }
 
+/// The address to tell the game it has: `local_ip` when it is set, otherwise
+/// this machine's. `None` if neither can be had, which is only reachable if
+/// the answer changed since `network_available()` agreed there was one.
+unsafe fn own_address() -> Option<i32> {
+	let address = match &CONFIG.local_ip {
+		Some(text) => match std::net::Ipv4Addr::from_str(text) {
+			Ok(address) => address,
+			Err(err) => {
+				platform::log(&format!(
+					"net: local_ip is not an IPv4 address ({err}): {text}"
+				));
+				return None;
+			}
+		},
+		None => match local_ip_address::local_ip() {
+			Ok(std::net::IpAddr::V4(address)) => address,
+			Ok(std::net::IpAddr::V6(address)) => {
+				platform::log(&format!(
+					"net: this machine's address is IPv6 ({address}), and \
+				                        the game only understands IPv4 -- set local_ip"
+				));
+				return None;
+			}
+			Err(err) => {
+				platform::log(&format!("net: cannot find this machine's address: {err}"));
+				return None;
+			}
+		},
+	};
+	Some(i32::from_be_bytes(address.octets()))
+}
+
+/// `clNet::getAddress`, where the game learns its own address.
+///
+/// The net struct it reads from sits at a different offset per build --
+/// `+0x1C` on base WMMT3, `+0x24` on 3DX and 3DX+ -- so the revision decides
+/// which, with the other tried as a fallback for a build nobody has looked at.
+/// Reporting nothing used to be a panic: an unparseable `local_ip`, or no
+/// network at all, took the process.
 unsafe extern "C" fn get_address(clnet: *mut *mut c_int) -> c_int {
-	if let Some(local_ip) = &CONFIG.local_ip {
-		let local_ip = std::net::Ipv4Addr::from_str(local_ip).unwrap();
-		let ip = i32::from_be_bytes(local_ip.octets());
-		let net = clnet.byte_offset(0x24).read();
-		let net = if net.is_null() {
-			clnet.byte_offset(0x1C).read()
-		} else {
-			net
-		};
-		net.byte_offset(0x04).write(ip);
-		ip
+	let Some(ip) = own_address() else {
+		return 0;
+	};
+	let (offset, fallback) = if GAME_VERSION.major == GameMajor::WM3 {
+		(0x1C, 0x24)
 	} else {
-		let local_ip = local_ip_address::local_ip().unwrap();
-		let local_ip = match local_ip {
-			std::net::IpAddr::V4(addr) => addr,
-			_ => unreachable!(),
-		};
-		let ip = i32::from_be_bytes(local_ip.octets());
-		let net = clnet.byte_offset(0x24).read();
-		let net = if net.is_null() {
-			clnet.byte_offset(0x1C).read()
-		} else {
-			net
-		};
-		net.byte_offset(0x04).write(ip);
-		net.byte_offset(0x04).write(ip);
-		ip
+		(0x24, 0x1C)
+	};
+	let mut net = clnet.byte_offset(offset).read();
+	if net.is_null() {
+		log_once(format!(
+			"net: clNet+{offset:#x} holds no net struct, trying +{fallback:#x}"
+		));
+		net = clnet.byte_offset(fallback).read();
 	}
+	if net.is_null() {
+		log_once(String::from(
+			"net: clNet has no net struct at either offset, so its address is not ours to set",
+		));
+		return ip;
+	}
+	net.byte_offset(0x04).write(ip);
+	ip
+}
+
+/// Says something once. `getAddress` is a getter the game may poll.
+fn log_once(message: String) {
+	static REPORTED: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+	let Ok(mut reported) = REPORTED.lock() else {
+		return;
+	};
+	if reported.contains(&message) {
+		return;
+	}
+	if reported.len() < 16 {
+		reported.push(message.clone());
+	}
+	platform::log(&message);
 }
 
 #[repr(C)]
@@ -291,90 +340,73 @@ pub struct RomInfo {
 	revision_name: [u8; 32],
 }
 
-impl Into<GameVersion> for &RomInfo {
-	fn into(self) -> GameVersion {
-		let revision_name = CStr::from_bytes_until_nul(&self.revision_name);
-		let Ok(revision_name) = revision_name else {
+impl From<&RomInfo> for GameVersion {
+	fn from(rom_info: &RomInfo) -> Self {
+		let name = CStr::from_bytes_until_nul(&rom_info.revision_name)
+			.ok()
+			.and_then(|name| name.to_str().ok());
+		let Some(name) = name else {
+			platform::log("gRomInfo's revision name is not text, so the revision stays unknown");
 			return default_gameversion();
 		};
-		let Ok(revision_name) = revision_name.to_str() else {
-			return default_gameversion();
-		};
-
-		let mut parts = revision_name.split('-');
-		let Some(next) = parts.next() else {
-			eprintln!("Unknown game revision: {revision_name}");
-			return default_gameversion();
-		};
-		let major = match next {
-			"WM3100" => GameMajor::WM3,
-			"W3X100" => GameMajor::W3X,
-			"W3P100" => GameMajor::W3P,
-			_ => {
-				eprintln!("Unknown game revision: {revision_name}");
-				return default_gameversion();
+		match parse_revision(name) {
+			Some(version) => {
+				platform::log(&format!("game revision {name}"));
+				version
 			}
-		};
-
-		let Some(next) = parts.next() else {
-			eprintln!("Unknown game revision: {revision_name}");
-			return default_gameversion();
-		};
-		let region = match next {
-			"1" => GameRegion::JP,
-			"2" => GameRegion::EN2,
-			"3" => GameRegion::EN3,
-			"4" => GameRegion::EN4,
-			_ => {
-				eprintln!("Unknown game revision: {revision_name}");
-				return default_gameversion();
+			None => {
+				platform::log(&format!("unknown game revision: {name}"));
+				default_gameversion()
 			}
-		};
-
-		let Some(_) = parts.next() else {
-			eprintln!("Unknown game revision: {revision_name}");
-			return default_gameversion();
-		};
-		let Some(_) = parts.next() else {
-			eprintln!("Unknown game revision: {revision_name}");
-			return default_gameversion();
-		};
-
-		let Some(next) = parts.next() else {
-			eprintln!("Unknown game revision: {revision_name}");
-			return default_gameversion();
-		};
-
-		let Some(minor) = next.chars().next() else {
-			eprintln!("Unknown game revision: {revision_name}");
-			return default_gameversion();
-		};
-
-		let minor = match minor {
-			'A' => GameMinor::A,
-			'B' => GameMinor::B,
-			_ => {
-				eprintln!("Unknown game revision: {revision_name}");
-				return default_gameversion();
-			}
-		};
-
-		let Ok(revision) = next.chars().skip(1).take(2).collect::<String>().parse() else {
-			eprintln!("Unknown game revision: {revision_name}");
-			return default_gameversion();
-		};
-
-		GameVersion {
-			major,
-			minor,
-			region,
-			revision,
 		}
 	}
 }
 
+/// `W3P100-2-0-0-A01` -- the Export 3DX+ dump -- into its parts. `None` for
+/// anything that is not that shape, which is the caller's cue to say so: every
+/// version-gated offset in the loader reads what this returns, and an
+/// unrecognised name silently takes the non-WMMT3 branch of each.
+fn parse_revision(name: &str) -> Option<GameVersion> {
+	let mut parts = name.split('-');
+	let major = match parts.next()? {
+		"WM3100" => GameMajor::WM3,
+		"W3X100" => GameMajor::W3X,
+		"W3P100" => GameMajor::W3P,
+		_ => return None,
+	};
+	let region = match parts.next()? {
+		"1" => GameRegion::JP,
+		"2" => GameRegion::EN2,
+		"3" => GameRegion::EN3,
+		"4" => GameRegion::EN4,
+		_ => return None,
+	};
+	// Two fields nothing is known about, then the revision itself.
+	parts.next()?;
+	parts.next()?;
+	let revision_name = parts.next()?;
+	let minor = match revision_name.chars().next()? {
+		'A' => GameMinor::A,
+		'B' => GameMinor::B,
+		_ => return None,
+	};
+	let revision = revision_name
+		.chars()
+		.skip(1)
+		.take(2)
+		.collect::<String>()
+		.parse()
+		.ok()?;
+	Some(GameVersion {
+		major,
+		minor,
+		region,
+		revision,
+	})
+}
+
 #[repr(u32)]
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, PartialEq, Debug)]
 pub enum GameMajor {
 	WM3 = 0,
 	W3X = 1,
@@ -383,7 +415,7 @@ pub enum GameMajor {
 }
 
 #[repr(u32)]
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, PartialEq, Debug)]
 pub enum GameMinor {
 	A = 0,
 	B = 1,
@@ -391,7 +423,7 @@ pub enum GameMinor {
 }
 
 #[repr(u32)]
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, PartialEq, Debug)]
 pub enum GameRegion {
 	JP = 1,
 	EN2 = 2,
@@ -401,7 +433,7 @@ pub enum GameRegion {
 }
 
 #[repr(C)]
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, PartialEq, Debug)]
 pub struct GameVersion {
 	major: GameMajor,
 	minor: GameMinor,
@@ -533,6 +565,15 @@ pub(crate) unsafe fn init() {
 	}
 	KEYCONFIG = Some(keyconfig);
 
+	// Before anything is installed, because a hook that gates on the revision
+	// has to be able to read it while it is being installed. This used to run
+	// last, and worked only because its one reader looks at it per frame.
+	let rom_info = (hook::get_symbol("gRomInfo") as *const RomInfo).as_ref();
+	if rom_info.is_none() {
+		platform::log("gRomInfo is missing, so the game revision stays unknown");
+	}
+	GAME_VERSION = rom_info.map_or_else(default_gameversion, GameVersion::from);
+
 	platform::init();
 	// Read the game's symbols up front: the crash reporter needs them to name
 	// a function, and an exception handler is no place to open a file.
@@ -579,11 +620,75 @@ pub(crate) unsafe fn init() {
 	// Measurement only, and only when asked for; see the module comment.
 	hud::init();
 
-	let rom_info = (hook::get_symbol("gRomInfo") as *const RomInfo).as_ref();
-	if rom_info.is_none() {
-		platform::log("gRomInfo is missing, so the game revision stays unknown");
+	platform::load_plugins(&GAME_VERSION);
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	/// The dump every hardware run in `docs/ROADMAP.md` was made on.
+	#[test]
+	fn reads_the_export_3dxp_revision() {
+		let version = parse_revision("W3P100-2-0-0-A01").expect("the Export 3DX+ name");
+		assert!(version.major == GameMajor::W3P);
+		assert!(version.region == GameRegion::EN2);
+		assert!(version.minor == GameMinor::A);
+		assert_eq!(version.revision, 1);
 	}
-	let version = rom_info.map_or_else(default_gameversion, |rom_info| rom_info.into());
-	GAME_VERSION = version;
-	platform::load_plugins(&version);
+
+	#[test]
+	fn reads_the_other_two_majors() {
+		// WM3100 is the one `adm.rs` and `get_address` branch on, so it is the
+		// one a parse failure would quietly misidentify.
+		assert!(parse_revision("WM3100-1-0-0-B12").unwrap().major == GameMajor::WM3);
+		assert!(parse_revision("WM3100-1-0-0-B12").unwrap().minor == GameMinor::B);
+		assert_eq!(parse_revision("WM3100-1-0-0-B12").unwrap().revision, 12);
+		assert!(parse_revision("W3X100-4-0-0-A03").unwrap().major == GameMajor::W3X);
+		assert!(parse_revision("W3X100-4-0-0-A03").unwrap().region == GameRegion::EN4);
+	}
+
+	#[test]
+	fn refuses_a_name_it_does_not_understand() {
+		for name in [
+			"",
+			"W3P100",
+			"W3P100-2",
+			"W3P100-2-0-0",     // nothing where the revision goes
+			"W3P100-9-0-0-A01", // no such region
+			"W3P100-2-0-0-C01", // no such minor
+			"W3P100-2-0-0-A",   // no number after the letter
+			"W3P100-2-0-0-Axx", // and not a number either
+			"WM4100-2-0-0-A01", // a game this is not
+		] {
+			assert!(parse_revision(name).is_none(), "accepted {name:?}");
+		}
+	}
+
+	/// A `RomInfo` whose name is not NUL-terminated, or not UTF-8, must come
+	/// back unknown rather than reading past the field.
+	#[test]
+	fn survives_a_rom_info_that_is_not_text() {
+		fn named(bytes: &[u8]) -> RomInfo {
+			let mut revision_name = [0_u8; 32];
+			revision_name[..bytes.len()].copy_from_slice(bytes);
+			RomInfo {
+				name: [0; 32],
+				region: [0; 32],
+				release_type: [0; 32],
+				date: [0; 32],
+				time: [0; 32],
+				revision: 0,
+				revision_name,
+			}
+		}
+
+		// The whole field used, so there is no terminator to find.
+		assert!(GameVersion::from(&named(&[b'A'; 32])).major == GameMajor::Unknown);
+		// Terminated, with rubbish after it that is none of our business.
+		let mut padded = *b"W3P100-2-0-0-A01\0\xff\xfe";
+		assert!(GameVersion::from(&named(&mut padded)).major == GameMajor::W3P);
+		// Terminated, but not text.
+		assert!(GameVersion::from(&named(b"\xff\xfe\0")).major == GameMajor::Unknown);
+	}
 }
