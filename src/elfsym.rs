@@ -1,7 +1,7 @@
 //! The game's own symbol table, so a logged address can say which function it
 //! is in rather than only which module.
 //!
-//! Ported from tatoohanz's C++ LINE plugin (`elfsym.cpp`, GPL-3). The fact
+//! Ported from tattoohanz's C++ LINE plugin (`elfsym.cpp`, GPL-3). The fact
 //! that makes it this simple is in its header: **`main` is `ET_EXEC` and not
 //! position-independent, so a link address is a runtime address** and nothing
 //! needs relocating -- on WMMT3, 3DX and 3DX+ alike, with nothing hardcoded

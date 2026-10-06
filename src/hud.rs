@@ -10,7 +10,7 @@
 //!   the *proportions* at a non-4:3 render but not the *placement*, so the
 //!   whole HUD sits in the middle with a margin each side.
 //! - Positions reach a sprite from the `.anm` timeline, not from the setters:
-//!   diffing tatoohanz's widescreen layouts against the dump's own shows x
+//!   diffing tattoohanz's widescreen layouts against the dump's own shows x
 //!   animated per keyframe, tens of thousands of values per file. Hooking
 //!   `setPosition` would see almost none of it.
 //! - The field offsets, read out of the dump's own 20-byte setters rather than
@@ -18,7 +18,7 @@
 //!   `clSpriteFont` keeps x at `+0x20`. **The two layouts differ**, which is
 //!   why there is a hook per class here rather than one shared one.
 //! - The transform that will eventually be applied is a *rigid translation*,
-//!   not a scale: the same diff shows tatoohanz moved elements by exactly
+//!   not a scale: the same diff shows tattoohanz moved elements by exactly
 //!   ±106 units -- the margin at 16:9 -- with the direction chosen per element.
 //!   A scale would spread each element internally, taking a needle off its dial
 //!   and opening gaps in per-glyph text.

@@ -94,7 +94,7 @@ Still unverified:
   a corrected frame. More pressing now that the FOV is widened by its tangent
   rather than its angle: that is a visible change to the 3D, and the test that
   justifies it proves an invariant rather than an appearance.
-- **A race.** Everything ported from tatoohanz's loader is aimed at the path a
+- **A race.** Everything ported from tattoohanz's loader is aimed at the path a
   race ends on -- the printer's print commands, the auto-service error latch --
   and all of it is unit-tested and mockline-tested only. The printer used to
   abort the process on five of thirteen commands, so the first full race is
@@ -131,7 +131,7 @@ Still unverified:
   and that was never decided — the stretch is one hook, while moving a widget
   cannot be. The route it does rule out is box mode, which fixes the stretch
   by pillarboxing the 2D layer instead of filling the screen.
-  This had been deferred because it lived in tatoohanz's fork of the loader
+  This had been deferred because it lived in tattoohanz's fork of the loader
   DLL (`msys-line_wal_3dxp.dll`), which carries dozens of HUD/sprite/anm hooks
   plus force feedback; LINE loads one plugin, so it cannot run alongside ours,
   and his DLL is GPLv3 — as is this project, so asking beat
@@ -170,7 +170,7 @@ pass renders with -- so the question is what else is drawn while that GL state
 is current. If it turns out to be the full-width background art, widening it is
 not the answer anyway; stretching is (see the skip-list discussion below).
 
-### What tatoohanz's widescreen patcher turned out to be
+### What tattoohanz's widescreen patcher turned out to be
 
 Worth having in writing, because it answers design questions we would otherwise
 have to measure, and because the archive may not be to hand next time. It is
@@ -228,7 +228,7 @@ sprites are not drawn on the main thread**, which any eventual nudge has to
 account for — `adm.rs` already marshals sprite-adjacent calls onto the main
 thread for exactly this reason.
 
-### What tatoohanz's C++ loader establishes, which is most of the placement work
+### What tattoohanz's C++ loader establishes, which is most of the placement work
 
 From the comments in `D:\line-wal0.5-main` (his C++ LINE plugin, GPL-3 as we
 are), arrived 2026-10-05. **It is not a git repository, has no history and
@@ -452,7 +452,7 @@ release; the first two are the ones with user-visible consequences.
   The first would tie it to the unwinding gap below; the second leaves it where
   it is, a LINE bug.
 - **Nothing resolves the `_Unwind_*` family, and we do not know what that
-  costs.** tatoohanz's loader binds all fifteen names through LINE's
+  costs.** tattoohanz's loader binds all fifteen names through LINE's
   `OnResolveSymbol`, on the premise that LINE's `msys-gcc_s` path does not
   resolve them, so C++ exception handling is dead and any throw crashes -- he
   names movie playback, skip and end-of-stream. We implement no
@@ -539,7 +539,7 @@ NOPs; reads `plugins/audio.toml` and `plugins/bgms/*`. Port into `src/bgm.rs`
 behind a config flag, keep its file layout so existing packs work, and verify
 expected bytes before writing the NOPs. Credit vixen256.
 
-### P6 — Gemballa unlock (from tatoohanz's Gemballa-Unlocker)
+### P6 — Gemballa unlock (from tattoohanz's Gemballa-Unlocker)
 
 Extracted from the PyInstaller bundle the user supplied. Two halves:
 
@@ -566,10 +566,10 @@ File offset + `0x8048000` = virtual address. **3DX+ Export v386**
 
 **(b) Asset porting** — ~150 sprites, three car folders (`gem_964_38RS`,
 `gem_964_RSR`, `gem_997_AVA`), `.anm` files and `car.lua`, copied from a **JPN
-dump**. Cannot be replaced by code; document running tatoohanz's
+dump**. Cannot be replaced by code; document running tattoohanz's
 `copy_gemballa_assets` and keep it an offline step.
 
-**Optional dialogue fix** (from tatoohanz's *widescreen* installer manifest,
+**Optional dialogue fix** (from tattoohanz's *widescreen* installer manifest,
 same 3DX+ Export target): write 3 UTF-32 strings into free space at
 `0x1388971`, `0x1388999`, `0x139CD48` and repoint 3 pointers at `0x58EA0C`,
 `0x58EA66`, `0x5900E6`.
@@ -621,7 +621,7 @@ be the problem.
 
 ## Fixed: the card printer could end a race
 
-All of this is tatoohanz's measurement, from his `card.cpp` and `card_diag.cpp`
+All of this is tattoohanz's measurement, from his `card.cpp` and `card_diag.cpp`
 comments; what we had was upstream's six-command version, which had every one
 of these bugs. It matters out of proportion to its size because the card path
 is the one a race ends on, and nobody had run one.

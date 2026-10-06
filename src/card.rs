@@ -1,7 +1,7 @@
 //! The magnetic card printer, emulated against `card.bin`.
 //!
 //! The RPS command set, the status-byte semantics, the `card.bin` layout and
-//! the partial-write track selectors are ported from tatoohanz's C++ LINE
+//! the partial-write track selectors are ported from tattoohanz's C++ LINE
 //! plugin (GPL-3), whose comments record how each was measured. Three of its
 //! findings are the reason this module is not the six-command version it was:
 //!
