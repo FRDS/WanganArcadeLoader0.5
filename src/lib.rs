@@ -101,6 +101,11 @@ pub struct Config {
 	#[cfg_attr(unix, allow(dead_code))]
 	file_log: bool,
 
+	/// Log every card-printer command, its payload size and the status the
+	/// printer answers with. Commands the emulation does not implement, and
+	/// writes it refuses, are reported either way.
+	card_log: bool,
+
 	/// Log the geometry the engine asks for: the screen size it reads out of
 	/// Lua, the viewports, the perspective FOV and every orthographic box, one
 	/// line per distinct set of arguments. Only does anything at a custom
@@ -144,6 +149,7 @@ const fn default_config() -> Config {
 		input_log: false,
 		cg_log: false,
 		file_log: false,
+		card_log: false,
 		res_log: false,
 		gl_debug: false,
 		shader_mode: ShaderMode::Auto,

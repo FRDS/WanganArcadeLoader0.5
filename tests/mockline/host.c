@@ -86,6 +86,59 @@ static struct {
 };
 #define NFAKES (sizeof(FAKES) / sizeof(FAKES[0]))
 
+/* clCardPrinter, as card.rs reads it: the pending-command word first, then the
+   three status bytes, the request buffer at +0x08, the response buffer at
+   +0x10 and the signed connect error at +0x1c. */
+static unsigned char printer[0x20];
+static unsigned char request[0x200];
+static unsigned char response[0x200];
+static void *card_exec;
+
+static int connect_error(void) { return *(int *)(printer + 0x1c); }
+static void latch_connect_error(void) { *(int *)(printer + 0x1c) = -5; }
+
+/* Hand the printer one command, the way clCardPrinter::startSequence does:
+   it zeroes the status bytes first, so a command that writes none leaves the
+   game reading 0x00 where it wants 0x30. */
+static void card_command(unsigned char command, const unsigned char *payload, int length)
+{
+	memset(request, 0, sizeof(request));
+	memset(response, 0, sizeof(response));
+	request[0] = 2;
+	request[1] = (unsigned char)(6 + length);
+	request[2] = command;
+	if (length) memcpy(request + 6, payload, length);
+
+	*(unsigned int *)(printer + 0x00) = 1;
+	printer[0x04] = printer[0x05] = printer[0x06] = 0x00;
+	*(unsigned char **)(printer + 0x08) = request;
+	*(unsigned char **)(printer + 0x10) = response;
+	((void (*)(void *))card_exec)(printer);
+}
+
+/* CRC-16/CCITT-FALSE, written out independently of the Rust so the two have
+   to agree about what a valid card looks like. */
+static unsigned short host_crc16(const unsigned char *data, int length)
+{
+	unsigned short crc = 0xFFFF;
+	for (int i = 0; i < length; i++) {
+		crc ^= (unsigned short)data[i] << 8;
+		for (int b = 0; b < 8; b++)
+			crc = (crc & 0x8000) ? (unsigned short)((crc << 1) ^ 0x1021) : (unsigned short)(crc << 1);
+	}
+	return crc;
+}
+
+static long file_size(const char *path)
+{
+	FILE *f = fopen(path, "rb");
+	if (!f) return -1;
+	fseek(f, 0, SEEK_END);
+	long size = ftell(f);
+	fclose(f);
+	return size;
+}
+
 /* Symbols handed out so far: name, address the plugin sees, current implementation. */
 #define MAX_SYMS 512
 static struct {
@@ -333,6 +386,53 @@ int main(int argc, char **argv)
 	create_texture(NULL, 9, 4);
 	CHECK(main_thread_calls == 1 && texture_handle_calls == 2 && texture_handle_a1 == 9,
 		  "createTextureHandle from another thread runs via the main thread");
+
+	/* The card printer. card.rs answers clCardPrinter::exec outright, reading
+	   the request buffer at +0x08 and writing the status bytes back into the
+	   printer object, so this is the only place that marshalling is checked. */
+	card_exec = impl("_ZN13clCardPrinter4execEv");
+	latch_connect_error();
+	card_command(0x20, NULL, 0); /* READSTATUS */
+	CHECK(printer[0x00] == 0 && printer[0x04] == 0x30 && printer[0x05] == 0x30 &&
+			  printer[0x06] == 0x30 && connect_error() == 0,
+		  "READSTATUS answers 30/30/30 and clears a latched connect error");
+
+	/* 0x7c is the mileage banner at the end of a race, which used to abort. */
+	unsigned char banner[] = {0x03, 'W', 'A', 'L'};
+	card_command(0x7C, banner, sizeof(banner));
+	CHECK(printer[0x00] == 0 && printer[0x05] == 0x30, "PRINTSTRING is acknowledged, not fatal");
+
+	card_command(0xE1, NULL, 0);
+	CHECK(printer[0x00] == 0 && printer[0x05] == 0x30, "an unknown command answers OK");
+
+	/* Write a whole card, eject it, then write only track 1: the other two
+	   tracks have to survive, which is the bricking regression. */
+	unsigned char card[0x45 * 3 + 3] = {0x00, 0x00, 0x36};
+	for (int i = 0; i < 0x45 * 3; i++) card[3 + i] = (unsigned char)(i / 0x45 + 1);
+	unsigned short sum = host_crc16(card + 3, 0xCD);
+	card[3 + 0xCD] = sum & 0xFF;
+	card[3 + 0xCD + 1] = sum >> 8;
+	card_command(0x53, card, sizeof(card));
+	CHECK(file_size("card.bin") == 0x45 * 3, "a whole card with a matching checksum is saved");
+
+	card_command(0x80, NULL, 0); /* EJECT reloads card.bin rather than dropping it */
+	unsigned char track1[0x45 + 3] = {0x00, 0x00, 0x30};
+	for (int i = 0; i < 0x45; i++) track1[3 + i] = 9;
+	card_command(0x53, track1, sizeof(track1));
+
+	unsigned char query[] = {0x00};
+	card_command(0x33, query, sizeof(query)); /* READ */
+	unsigned char *served = response + 6;
+	CHECK(printer[0x04] == 0x31 && served[0] == 9 && served[0x45] == 2 && served[0x45 * 2] == 3,
+		  "a partial write after an eject keeps the tracks it did not touch");
+	CHECK(file_size("card.bin") == 0x45 * 3,
+		  "a partial write is still saved, stale checksum and all");
+
+	/* clCardDeviceGameService::getResult is watched, not answered for. */
+	int result = ((int (*)(void *))impl("_ZNK23clCardDeviceGameService9getResultEv"))(NULL);
+	CHECK((result & 0xF000) == 0x5000, "clCardDeviceGameService::getResult passes through");
+	CHECK(((int (*)(void *))impl("_ZNK27clCardDeviceGameAutoService9getResultEv"))(NULL) == 0,
+		  "clCardDeviceGameAutoService::getResult reports OK");
 
 	/* ADM */
 	unsigned int **mode = ((unsigned int **(*)(void))impl("admChooseModeConfigi"))();

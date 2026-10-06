@@ -54,11 +54,13 @@ shader_mode = "auto"
 #   input_log  every controller and input, with the name for keyconfig.toml
 #   cg_log     the shader profile chosen, and the listing for any failure
 #   file_log   every file opened; failures are logged either way
+#   card_log   every card-printer command; refusals are logged either way
 #   gl_debug   an OpenGL debug context, relaying the driver's own messages
 #   res_log    the screen size, viewports and projections the engine asks for
 input_log = false
 cg_log = false
 file_log = false
+card_log = false
 gl_debug = false
 res_log = false
 
