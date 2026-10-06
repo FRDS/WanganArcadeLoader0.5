@@ -63,7 +63,15 @@ Still unverified:
 
 - **How the widescreen correction looks.** The arithmetic is unit-tested and
   mockline drives it through the real DLL at 1280x720, but nobody has looked at
-  a corrected frame.
+  a corrected frame. More pressing now that the FOV is widened by its tangent
+  rather than its angle: that is a visible change to the 3D, and the test that
+  justifies it proves an invariant rather than an appearance.
+- **A race.** Everything ported from tatoohanz's loader is aimed at the path a
+  race ends on -- the printer's print commands, the auto-service error latch --
+  and all of it is unit-tested and mockline-tested only. The printer used to
+  abort the process on five of thirteen commands, so the first full race is
+  both the gate on that work and the first time anyone has had a reason to
+  expect one to finish.
 - **The HUD attribution table**, which `hud.rs` collects but which needs a real
   race: eleven idle minutes of the attract loop produced no `clRaceThread::draw`
   call at all. Play one with `res_log = true` and the table lands in
@@ -88,13 +96,19 @@ Still unverified:
   weakened.
 - **Windows-only testing**; Linux gets CI compile checks.
 - **GLFW keyboard on both platforms** (drops `x11`, `device_query`).
-- **Widescreen is corrected in the projection, not per sprite**, and the
-  research behind that is in its own section below. It had been deferred
-  because it lives in tattoohanz's closed fork of the loader DLL
-  (`msys-line_wal_3dxp.dll`), which carries dozens of HUD/sprite/anm hooks plus
-  force feedback; LINE loads one plugin, so it cannot run alongside ours, and
-  his DLL is GPLv3 — as is this project, so asking him for source beats
-  reverse-engineering it.
+- **Distortion is corrected in the projection, not per sprite; placement, if
+  it is corrected at all, is a rigid per-widget translation.** The research
+  behind both halves is in its own section below. Sharpened 2026-10-06: the
+  original sentence said "widescreen", which read as covering placement too,
+  and that was never decided — the stretch is one hook, while moving a widget
+  cannot be. The route it does rule out is box mode, which fixes the stretch
+  by pillarboxing the 2D layer instead of filling the screen.
+  This had been deferred because it lived in tatoohanz's fork of the loader
+  DLL (`msys-line_wal_3dxp.dll`), which carries dozens of HUD/sprite/anm hooks
+  plus force feedback; LINE loads one plugin, so it cannot run alongside ours,
+  and his DLL is GPLv3 — as is this project, so asking beat
+  reverse-engineering it. **He supplied the source on 2026-10-05**, and what it
+  establishes is recorded below.
 - **Gemballa patches applied in memory**, never to `main` on disk.
 - **ARM is pointless**: the game is 32-bit x86 and our code rewrites its
   machine code, so an ARM build could never load into it. On ARM you run the
@@ -120,7 +134,7 @@ edge sits inward of it. A race may also ask for boxes the attract screens do
 not; `res_log` is how to see them, and `widen` leaves anything it does not
 recognise alone.
 
-### What tattoohanz's widescreen patcher turned out to be
+### What tatoohanz's widescreen patcher turned out to be
 
 Worth having in writing, because it answers design questions we would otherwise
 have to measure, and because the archive may not be to hand next time. It is
@@ -166,10 +180,10 @@ The two layouts **differ**, so a per-sprite hook needs the offset per class.
 `clSpriteAnime`'s pair confirms the ones in the rescale upstream removed in
 `af420be` (`git show 25c5d33:src/res.rs`) — take its offsets, not its
 arithmetic: its `/8.0` fudge yields 40px where the geometry says 160.
-`clSpriteManager::entry` is not the single interception point it looks like —
-it is list plumbing over `clSpriteRootEntry`, unlinking a pool entry and making
-a vtable call at `+0x8` — so interception belongs at each class's `draw`,
-patch-call-restore.
+`clSpriteManager::entry` looked like list plumbing over `clSpriteRootEntry` —
+unlinking a pool entry and making a vtable call at `+0x8` — so interception
+was going to be at each class's `draw`, patch-call-restore. **The C++ loader
+corrects both halves of that**; see below.
 
 `hud.rs` is the measurement for this, behind `res_log`: it wraps each race
 console's `draw` so the sprites drawn inside it can be attributed, and reports
@@ -177,6 +191,128 @@ each console's x range, which is what decides its anchor. **It also found that
 sprites are not drawn on the main thread**, which any eventual nudge has to
 account for — `adm.rs` already marshals sprite-adjacent calls onto the main
 thread for exactly this reason.
+
+### What tatoohanz's C++ loader establishes, which is most of the placement work
+
+From the comments in `D:\line-wal0.5-main` (his C++ LINE plugin, GPL-3 as we
+are), arrived 2026-10-05. **It is not a git repository, has no history and
+there is no second copy**, so this is the record. Each item is his measurement;
+what we do with it is ours.
+
+**The transform goes in `entry`/`entryAfter` after all, and our plan was
+wrong.** The vtable call at `+0x8` is `applyUser`, slot 2: `entry()` calls it
+whenever the dirty flag at `+0x74` is not 1 and *then* copies twelve floats
+into the draw buffer, so anything written into the vertices beforehand is lost.
+Call `applyUser` yourself, mark the entry clean and offset the finished
+vertices, and it works for every entry type. The reason it has to be there
+rather than at `clSpriteAnime::draw`: **the race meter is not a
+`clSpriteAnime` at all.** `clMeterConsole::drawMeter` submits 17 raw entries a
+frame, mixed plain `clSpriteEntry` (absolute coordinates in the vertices) and
+`clSpriteMatrixEntry[UV]` (vertices rebuilt by `applyUser` from the 2x3 affine
+at `+0x7c`). A transform written against `clSpriteAnime+0x4C` would miss the
+meter entirely. Keep `+0x4C`/`+0x20` for `hud.rs`'s measurement; the eventual
+move belongs in `entry`, with `clSpriteAnime::draw`/`clSpriteFont::draw`
+demoted to marking which widget is being drawn.
+
+`clSpriteRootEntry`, with the provenance he cites:
+
+| offset | what |
+|---|---|
+| `+0x00` | vptr, compared against `_ZTV<class>+8` to tell the four entry types apart |
+| `+0x04` | `imageId` — both `clSpriteEntry::applyUser` @`0x84603ea` and `clSpriteMatrixEntry::applyUser` @`0x846e166` load `[this+4]` and hand it to `clImageResourceManager::getSize()` |
+| `+0x08`, `+0x14`, `+0x20`, `+0x2c` | the four finished vertex **x** floats, already in 640x480 space |
+| `+0x74` | byte: the vertices are up to date |
+| `+0x7c` | 2x3 affine, translation at `+0x8c`/`+0x90` |
+
+**Three lessons about *what* to move, each with the measurement that forced
+it.** They are the difference between a HUD that moves and a HUD that comes
+apart:
+
+- **Per widget, not per quad.** A string is one quad per glyph, so a per-quad
+  decision tears it apart at the dead-zone border.
+- **The extent of the whole widget, not of its first quad.** The "till goal"
+  readout (`CONS_G_LAST_NOKORI`) keeps digit slots on both sides of the centre
+  — caption 227, digits 266/298/330, the "m" at 361 — and which slots exist
+  depends on the digit count, so deciding from the first quad flipped the whole
+  readout by the bar width as the distance counted down.
+- **The union of every frame seen, never shrinking.** The tuning-point progress
+  bar starts as a sliver at the left of its frame and grows rightwards. Judged
+  on its current extent it sits entirely left of centre, gets pushed out of its
+  own frame, and snaps back once it grows past the middle.
+
+**The decision itself**, with the dead zone at 8 units: a widget entirely left
+of `320 - 8` moves `-bar`, one entirely right of `320 + 8` moves `+bar`, and
+one that spans the middle does not move. His alternative is proportional —
+`(centre - 320) * (k - 1)` where `k` is the widened width over 640 — which
+keeps composite widgets together (the menu timer's bezel and digits are two
+separate groups) at the cost of rigidity.
+
+**The bar is 106.67 units in 640-space at 16:9, by three independent routes**:
+his `box_x * 640 / box_w` under box mode, our `widen`'s
+`320 * (render_aspect / (640/480) - 1)`, and the 30,572 of 31,171 changed
+`.anm` values that are exactly ±106. Three sources, one number, and all three
+say rigid translation.
+
+**Naming a widget portably needs the `.anm`, not an id.** Hooking `setAnime`
+worked on WMMT3 and 3DX+ but **hung 3DX**, so he recognises an animation from
+the data the object already holds: `clSpriteAnime` keeps the loaded `.anm`
+between `+0x18` (begin) and `+0x14` (end), and the first dword of that buffer
+is the frame count, so the pair (length, frame count) read off disk at startup
+identifies it without touching game code. It has to be the file name because
+**anime ids are not portable: `menu_g_finish_st_bar.anm` is 178 in WMMT3, 189
+in 3DX and 199 in 3DX+.** Nor are image ids enough: the tuning-point bar's fill
+is swapped at run time via `setImageReplace`, so the id that reaches a hook is
+the replacement's and the one you would list never appears at all.
+
+Walking `sprite_anime_data_file` to resolve a name has three hazards: the
+stride is `{path, NAME}` on 3DX/3DX+ but a single pointer on some builds (probe
+the second pointer for `"data/"`), entry 0 is a dummy with an empty path on
+some builds so it must not terminate the walk, and **reading one entry past the
+end crashed WMMT3DX, whose table ends exactly at `0x09522438`** — the end has
+to be found by probing readability, not by dereferencing.
+
+Two things no layout edit can move, so they are code:
+
+- The story prologue's "Now at N wins" is a `clSpriteFont` whose position is a
+  `setPosition(620.0f, 20.0f)` baked into `clSeqStEnemyInformationThread`'s
+  constructor, as an imm32 at ctor`+0x7A7`. Rewriting that immediate is the
+  only way, and the text is right-aligned on it, so a longer count grows
+  leftwards and cannot run off. 3DX+ only — he gates on an animation only 3DX+
+  ships rather than trusting the offset across builds, and refuses the write
+  unless the current value is what he expects.
+- The outrun FINISH screen draws its rival portraits on a **60-unit grid
+  spanning 22..626**, so the row straddles the centre and each part lands in a
+  different bucket, tearing the row into clusters a bar apart. The portraits
+  have no edge to be pushed to, so the whole widget keeps its authored x. Image
+  ids cannot express that: which face is drawn depends on which rivals were
+  beaten, and the character-named portraits are outside the numbered
+  1721..1754 block.
+
+**Box mode is the conservative alternative we are not taking.** His `hud_43`
+shrinks the GL viewport to a centred 4:3 rect for the 2D pass, so the layer is
+pillarboxed rather than filling the screen, and paints the bars black — in
+menus only, because *during a race the bars have to stay transparent, that is
+where the wide 3D lives*. It is an alternative to `res.rs::widen`, not an
+addition, and adopting it would reverse the decision above. Worth having
+written down because it is the designed answer to the two problems `widen`
+creates in menus: full-width background art leaves gaps at the edges (his
+`hud_stretch_bg` stretches those quads instead of moving them, since a shift
+would just move the gap), and `clMenu3dEnvironment` does not honour the box.
+Its companions — clamping oversized render targets and viewports — only make
+sense with it.
+
+Two traps that apply to us whatever route we take, both now reported under
+`res_log`: `clGraphics::setFsaa()` renders through a **2x supersample buffer**,
+and the menu background asks for a viewport at **twice the screen size**, so a
+bar width computed from `config.toml` would be wrong for the target actually
+bound. Take it from `glGetIntegerv(GL_VIEWPORT)`.
+
+Also his, and not about placement: the lens flare must *not* be boxed or
+anchored, because its quads are 2D but positioned from projected 3D NDC; and
+the rival marker must be scaled about the centre rather than anchored, because
+its sprite space maps to the 4:3 box so it lags the car by 12.5% of its
+distance from the centre, and anchoring makes it jump whenever it crosses the
+dead zone.
 
 ## Windows runtime strategy
 
@@ -274,6 +410,42 @@ release; the first two are the ones with user-visible consequences.
   registers, a stackdump, eleven minutes into an idle run. An earlier
   29-minute run that saw neither ending was luck rather than evidence, so the
   two are independent and only the quiet one is fixed.
+  Now that `elfsym.rs` exists, the discriminating question is answerable from
+  the next occurrence: does the symbolised stack scan show frames in
+  `msys-gcc_s-1.dll` or the game's own libstdc++, or only in `msys-2.0.dll`?
+  The first would tie it to the unwinding gap below; the second leaves it where
+  it is, a LINE bug.
+- **Nothing resolves the `_Unwind_*` family, and we do not know what that
+  costs.** tatoohanz's loader binds all fifteen names through LINE's
+  `OnResolveSymbol`, on the premise that LINE's `msys-gcc_s` path does not
+  resolve them, so C++ exception handling is dead and any throw crashes -- he
+  names movie playback, skip and end-of-stream. We implement no
+  `OnResolveSymbol` at all, so whatever LINE does with those imports is what
+  happens. Three things to settle before copying anything, cheapest first:
+  the dump's `main` **does** carry `.eh_frame` (`0x4ed8` bytes) and
+  `.eh_frame_hdr` (`0x10c4`), measured with `readelf -S`, so there is unwind
+  information to find; an observer-only `OnResolveSymbol` that logs every name
+  and resolves none would say which imports LINE actually fails on, at no risk;
+  and `_Unwind_Backtrace` called from inside an existing hook would say whether
+  a DWARF unwinder can find FDEs for ELF-mapped frames at all. The last is the
+  one that decides it: on glibc `_Unwind_Find_FDE` locates `.eh_frame` through
+  `dl_iterate_phdr`, which does not exist here, so both mingw's libgcc and
+  Cygwin's fall back to a registry that nothing has registered the game in.
+  **Binding the family without registering the frames would change the failure
+  mode and not the outcome** -- and `0x4ed8` of `.eh_frame` in a 25 MB binary
+  says most of the game has no unwind tables anyway.
+- **The game's `stdin`/`stdout`/`stderr` may be null, and his loader says that
+  is fatal.** Same mechanism, same callback: he binds `_IO_2_1_std*_` and
+  `std*` to msys's real `FILE` structs, reporting that they otherwise stay null
+  and the game hands a null `FILE*` to msys's `fwrite` and dies inside
+  `msys-2.0.dll` -- he names create-card. **His fix must not be copied
+  literally**: he builds with the MSYS toolchain so his C runtime's `stdout`
+  *is* msys's, while ours is msvcrt's, and handing the game an msvcrt `FILE*`
+  that it passes to msys's `fwrite` is worse than handing it null. The source
+  has to be `line::resolve_stub("stdout")`, which
+  `unbuffer_msys_stdout()` already uses. Whether we have the problem at all is
+  one log line away: that function returns silently when the stub's `FILE*` is
+  null, so nobody has looked.
 - **`limit_fps()` busy-spins the last 2ms of every frame**, about 12% of one
   core continuously. Harmless on a desktop, less so on a Max-Q laptop. A
   swap-interval divisor would remove it on exact-multiple refresh rates, but
@@ -331,7 +503,7 @@ NOPs; reads `plugins/audio.toml` and `plugins/bgms/*`. Port into `src/bgm.rs`
 behind a config flag, keep its file layout so existing packs work, and verify
 expected bytes before writing the NOPs. Credit vixen256.
 
-### P6 — Gemballa unlock (from tattoohanz's Gemballa-Unlocker)
+### P6 — Gemballa unlock (from tatoohanz's Gemballa-Unlocker)
 
 Extracted from the PyInstaller bundle the user supplied. Two halves:
 
@@ -358,22 +530,125 @@ File offset + `0x8048000` = virtual address. **3DX+ Export v386**
 
 **(b) Asset porting** — ~150 sprites, three car folders (`gem_964_38RS`,
 `gem_964_RSR`, `gem_997_AVA`), `.anm` files and `car.lua`, copied from a **JPN
-dump**. Cannot be replaced by code; document running tattoohanz's
+dump**. Cannot be replaced by code; document running tatoohanz's
 `copy_gemballa_assets` and keep it an offline step.
 
-**Optional dialogue fix** (from tattoohanz's *widescreen* installer manifest,
+**Optional dialogue fix** (from tatoohanz's *widescreen* installer manifest,
 same 3DX+ Export target): write 3 UTF-32 strings into free space at
 `0x1388971`, `0x1388999`, `0x139CD48` and repoint 3 pointers at `0x58EA0C`,
 `0x58EA66`, `0x5900E6`.
 
+**What his C++ loader's `probe.cpp` adds**, which is the symbol-level view of
+the same thing and is how to confirm the byte edits did what they were meant
+to rather than trusting an offset. Its goal was to settle empirically which
+screen drives the maker list and what index each cursor position asks for:
+
+- `get_car_from_maker(maker, car)` is the function the lower bound guards,
+  returning a table of `{count, ids...}`.
+- Maker order is `GEMBALLA = 0`, then MAZDA, MITSUBISHI, NISSAN, SUBARU,
+  TOYOTA — so the lower bound of 1 is exactly what hides index 0.
+- Two candidate drivers, `clSeqCardMakerSelectThread` and
+  `clSeqTgWheelMakerThread`, with the cursor at `[this+0x494]` and the previous
+  value at `+0x490` (verified on clean 3DX only).
+- Everything resolves by mangled name, so it works unchanged on
+  3DX / 3DX_JPN / 3DX_exp: `_Z18get_car_from_makerii`,
+  `_ZN26clSeqCardMakerSelectThread3runEPv`, `_Z18seqCardMakerSelectv`,
+  `_ZN24clseqCardCarSelectThread12change_modelEN10nsCarParts12emCarModelIDES1_`,
+  `_ZN23clSeqTgWheelMakerThread3runEPv` and the rest of that family.
+
+Take the facts, not the code: it classifies return addresses against
+hand-written per-build function size tables keyed on a hardcoded
+`get_car_from_maker` address, and `src/elfsym.rs` now gives sizes from
+`st_size` for every build for free.
+
 ### P7 — network
 
 Currently the network boot thread is stubbed out unless `local_ip` is set.
-Start by hooking `clNet::getAddress` to return `local_ip` (default
-`127.0.0.1`) with a /24 mask, as the C++ port does, and try two instances on
-loopback for split-screen. `clNet::setInterfaceAddress` is already stubbed on
-Windows. If the game's LAN session needs broadcast, loopback won't carry it —
-say so and move to real IPs.
+`clNet::getAddress` already returns `local_ip`, and since 2026-10-06 it reads
+the net struct from the offset the revision calls for (`+0x1C` on base WMMT3,
+`+0x24` on 3DX and 3DX+) rather than guessing, and reports rather than
+panicking when it cannot answer. **The /24 mask at `net+0x08` is still not
+written** — his loader writes `255.255.255.0` there, and that is the next
+thing to do. Then try two instances on loopback for split-screen.
+`clNet::setInterfaceAddress` is already stubbed on Windows. If the game's LAN
+session needs broadcast, loopback won't carry it — say so and move to real IPs.
+
+His loader also carries a LAN-VS diagnostic block worth knowing exists, though
+it is installed only on base WMMT3 and we do not target that: socket lifecycle
+tracing on LINE's `socket`/`bind`/`listen`/`accept`/`connect`/`getsockopt`
+stubs, a chokepoint on `boost::asio::detail::throw_error` (which carries the
+error value), and hooks on `clNet::startJoinPlay`,
+`clLanSessionPimpl::connectHandler`, `clNet::sendCrownUnlock`, `seqMain` and
+`mseqPlay`. The intent was to run the same trace on a working DX cabinet and
+diff, which is the shape this phase should take if the handshake turns out to
+be the problem.
+
+## Fixed: the card printer could end a race
+
+All of this is tatoohanz's measurement, from his `card.cpp` and `card_diag.cpp`
+comments; what we had was upstream's six-command version, which had every one
+of these bugs. It matters out of proportion to its size because the card path
+is the one a race ends on, and nobody had run one.
+
+Five of the thirteen RPS commands hit `panic!`, and `panic = 'abort'` makes
+that the process. `PRINTSTRING 0x7C` is the text the reader would burn onto
+the card -- the mileage banner at the end of a race. `EXTRACHAR 0x7A`,
+`ERASE 0x7D`, `CLEANING 0xA0` and `BATTERYCHECK 0xF5` are the rest of the same
+print state machine, which `clCardDeviceGameService::clPrintProcess::run`
+drives by polling `chkFinish()` and `chkNoError()`. `BATTERYCHECK` must answer
+`0x30` in s2: `0x40` is how a real reader reports a flat backup battery.
+
+`clCardPrinter::startSequence()` **zeroes s1/s2/s3 before every command**, and
+`0x00` is not `0x30`, so a command that answers without writing a status
+leaves `chkNoError()` false. `READSTATUS` -- which the boot sequence relies on
+-- wrote none at all, handing the game whatever `initSerial()` left behind,
+including a negative connect error at `[this+0x1c]` if opening the serial
+device failed. **That is the intermittent "card reader not functional" on the
+title screen.** `clCardDeviceGameService::clStatus::setupResult()` only reaches
+`0xC`, the one value `clSeqBootCardDeviceThread` accepts, when every `chk*` is
+false and `chkNoCard` is true.
+
+The printer object, as `clCardPrinter::getRPStoStatus` reads it: pending
+command word at `+0x00` (write 0 to finish), request buffer `+0x08`, response
+buffer `+0x10`, s1/s2/s3 at `+0x04`/`+0x05`/`+0x06`, signed connect error at
+`+0x1c`. `getReadData()` is `memcpy(dst, this[0x10] + 6, 0xcf)`, so the card
+bytes go six into the response buffer.
+
+`card.bin` is `0x45 * 3` = 207 bytes, three tracks of 69, with a
+CRC-16/CCITT-FALSE at `0xCD` over bytes `0..0xCD` -- from `clV386CardData`'s
+`getSumStart` → `0xcd`, `getSumEncStart` → `0`, `getSumEncSize` → `0xcd` and
+an assertion of `0xcf`. **The game writes tracks individually**:
+`requestWrite()` diffs against the old card and sends selector `0x30` (track 1,
+69 bytes at 0), `0x35` (tracks 2-3, 138 at `0x45`) or `0x36` (all 207 at 0).
+Since the sum lives in track 3, a partial write over a zero-filled buffer
+produces a correctly sized card with dead tracks and a sum matching nothing --
+and one `EJECT` that cleared the buffer followed by any partial write bricked
+the saved card permanently. `EJECT` now reloads `card.bin`, because a real
+reader spits the card out and the player pushes it back in.
+
+**Open question, deliberately:** we report a checksum mismatch and save
+anyway. The sum covers all three tracks, so a track-1 write ought to change it
+-- yet the game sends track 1 alone, so either the wire format is more than
+this or the sum is kept some other way. Refusing to save on a mismatch (which
+his code does) would silently throw away a race if that assumption is wrong,
+and the bytes are the game's own either way.
+
+3DX and 3DX+ added `clCardDeviceGameAutoService`, absent on base WMMT3, which
+polls the device every frame. Its `getResult` starts at pending and latches a
+hard error once enough polls pass with nothing answering, which calls
+`clNet::stop()` and draws `clMsgCardDeviseError` -- **what an idle attract loop
+eventually reaches**. It reads `[svc+0x34]` (busy) and `*[svc+0x2c]` (the
+status, whose first int is the result) itself and never calls
+`clCardDeviceGameService::getResult`, which is why hooking that getter sees
+nothing when the error arrives this way. The result codes, from the messages
+each one draws:
+
+| | | | |
+|---|---|---|---|
+| 0 idle | 1 busy | 2 dispenser empty | 3 connect — check connections |
+| 4 write error — save failure | 5 read error — partial read | 6 block error — card jam | 7 print error |
+| 8 system error | 9 illegal error — card jam | 0xA cannot execute — ejection error | 0xB battery too low |
+| 0xC no card, no error — **OK** | | | |
 
 ## Fixed: the game ending itself
 
