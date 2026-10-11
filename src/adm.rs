@@ -501,6 +501,9 @@ unsafe extern "C" fn adm_swap_buffers(window_ptr: *mut AdmWindow) -> c_int {
 
 	limit_fps();
 	report_fps();
+	// Behind `res_log`, and the only path that reliably runs once a frame --
+	// which is why the HUD measurement is dumped from here. See `hud::tick`.
+	hud::tick();
 	window.window.swap_buffers();
 	window.glfw.poll_events();
 	if window.window.should_close() {

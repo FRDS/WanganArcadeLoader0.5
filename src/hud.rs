@@ -175,29 +175,67 @@ unsafe fn report_thread_once(reported: &mut bool, what: &str) {
 	));
 }
 
-static mut RACE_FRAMES: u32 = 0;
-/// How often the table is printed, in race frames. 300 is five seconds at the
-/// rate the game is held to.
+static mut FRAMES: u32 = 0;
+/// How often the table is printed, in presented frames. 300 is five seconds at
+/// the rate the game is held to.
 const DUMP_EVERY: u32 = 300;
 
-unsafe extern "C" fn race_draw(this: *const c_void) -> *const c_void {
-	report_thread_once(&mut RACE_THREAD_REPORTED, "the race");
-	// The consoles draw inside this call, so the tallies are complete only
-	// after it returns.
-	let result = call_game(ORIGINAL_RACE_DRAW, (this,));
-	RACE_FRAMES += 1;
-	if RACE_FRAMES % DUMP_EVERY == 0 {
+/// Prints the table every `DUMP_EVERY` frames. Called from `adm.rs`'s swap,
+/// which is the one path certain to run.
+///
+/// **It is driven from the frame path and not from the race, because
+/// `clRaceThread::draw` is never called.** Measured at 1280x720 on 2026-10-11,
+/// in a real race on the Daikoku Line with the HUD plainly on screen: the
+/// sprite hook fired -- `hud: a sprite is drawn on another thread` is in that
+/// log -- and `race_draw` below did not run once. The dump used to hang off
+/// it, so the tallies filled up for an entire race and nothing was ever
+/// printed. `clRaceThread::draw` looks vestigial: the class also exports
+/// `run(void*)`, `race()`, `yield()` and `starting()`, and the per-frame work
+/// reaches the consoles without going through it.
+///
+/// A dump happens only when some console drew. The attract loop draws sprites
+/// in quantity with every console silent, and an empty table every five
+/// seconds for as long as a cabinet idles is exactly the per-frame logging
+/// `report.rs` exists to prevent.
+pub unsafe fn tick() {
+	if !CONFIG.res_log {
+		return;
+	}
+	FRAMES += 1;
+	if FRAMES % DUMP_EVERY != 0 {
+		return;
+	}
+	// Tag 0 is sprites drawn under no console at all. It is worth reporting
+	// inside a table but must never be the reason for one.
+	let drew = (1..TALLIES.len()).any(|index| {
+		let tally = TALLIES[index];
+		tally.sprites > 0 || tally.fonts > 0
+	});
+	if drew {
 		dump();
 	}
-	result
+}
+
+unsafe extern "C" fn race_draw(this: *const c_void) -> *const c_void {
+	// Kept hooked, though nothing has ever reached it, so that the log says so
+	// on the day something does. See `tick` for the measurement.
+	report_thread_once(&mut RACE_THREAD_REPORTED, "the race");
+	call_game(ORIGINAL_RACE_DRAW, (this,))
 }
 
 /// Prints what each console drew, then starts a fresh period so a later table
 /// describes the race as it is then rather than everything since it began.
 unsafe fn dump() {
 	platform::log(&format!(
-		"hud: ---- {DUMP_EVERY} race frames, sprite x by console ----"
+		"hud: ---- {DUMP_EVERY} frames, sprite x by console ----"
 	));
+	// Taken before anything is printed, because the loop below clears each
+	// tally as it reports it -- so a list built afterwards finds every console
+	// empty and names all twelve, including the ones just printed above it.
+	let silent: Vec<&str> = (1..TALLIES.len())
+		.filter(|index| TALLIES[*index].sprites == 0 && TALLIES[*index].fonts == 0)
+		.map(|index| CONSOLES[index - 1].1)
+		.collect();
 	for index in 0..TALLIES.len() {
 		let tally = TALLIES[index];
 		if tally.sprites == 0 && tally.fonts == 0 {
@@ -216,11 +254,10 @@ unsafe fn dump() {
 	}
 	// Named even when empty: a console that brackets no sprites at all is the
 	// result that would invalidate the anchor approach for it, and silence
-	// would hide that.
-	let silent: Vec<&str> = (1..TALLIES.len())
-		.filter(|index| TALLIES[*index].sprites == 0 && TALLIES[*index].fonts == 0)
-		.map(|index| CONSOLES[index - 1].1)
-		.collect();
+	// would hide that. Measured on 2026-10-11, five of the twelve are in here
+	// through a whole race -- meter, meter.draw1, map, sectiontime and
+	// rivalinfo -- while the minimap and the rival panel are plainly on
+	// screen, so their draw() is as vestigial as clRaceThread's.
 	if !silent.is_empty() {
 		platform::log(&format!("hud: drew nothing: {}", silent.join(", ")));
 	}
