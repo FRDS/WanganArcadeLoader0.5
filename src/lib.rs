@@ -9,6 +9,7 @@ pub mod adm;
 pub mod al;
 pub mod card;
 pub mod elfsym;
+pub mod gemballa;
 pub mod hook;
 pub mod hud;
 pub mod jamma;
@@ -75,6 +76,13 @@ pub struct Config {
 	/// and showing world where the stretch used to be. A no-op at 4:3. Turn it
 	/// off to get the old behaviour without giving up the resolution.
 	widescreen_hud: bool,
+
+	/// Unlock the GEMBALLA maker, which the Export build hides, and put story
+	/// chara 30 back in the Gemballa 964 RSR. Applied in memory, never to
+	/// `main` on disk, and only when the bytes at every offset are what this
+	/// build should have. The maker half additionally needs
+	/// `data/car/gem_*` to hold the models, which an Export dump ships empty.
+	gemballa: bool,
 
 	/// Push HUD widgets back out to the edges they were drawn against.
 	///
@@ -160,6 +168,7 @@ const fn default_config() -> Config {
 		height: 480,
 		widescreen_hud: true,
 		widescreen_anchor: false,
+		gemballa: false,
 		file_redirect: None,
 		vsync: true,
 		fps_limit: if cfg!(windows) { 60 } else { 0 },
@@ -622,8 +631,8 @@ pub(crate) unsafe fn init() {
 	if CONFIG.width != 640 || CONFIG.height != 480 {
 		res::init();
 	}
-	// Measurement only, and only when asked for; see the module comment.
 	hud::init();
+	gemballa::init();
 
 	platform::load_plugins(&GAME_VERSION);
 }

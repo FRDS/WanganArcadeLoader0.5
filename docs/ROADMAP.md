@@ -582,8 +582,14 @@ expected bytes before writing the NOPs. Credit vixen256.
 Extracted from the PyInstaller bundle the user supplied. Two halves:
 
 **(a) `main` byte edits** — apply in memory after verifying the expected bytes.
-File offset + `0x8048000` = virtual address. **3DX+ Export v386**
-(md5 `6f02c8bc3c6c1711eb2bb97218328ff6`, 24925524 bytes):
+File offset + `0x8048000` = virtual address. **3DX+ Export v386**, 24925524
+bytes. **The md5 recorded here was `6f02c8bc3c6c1711eb2bb97218328ff6` and no
+dump we have matches it** — two independent Export copies both hash
+`aac96862372ee774a14096792fc40c13` at that exact byte count. Every one of the
+seven offsets below verifies against them, so the offsets are right and the
+hash is not; it was presumably taken from a patched copy. Treat the md5 as
+unreliable and the expected bytes as the real identifier, which is what
+`src/gemballa.rs` does:
 - `0x7A8641`: `83 be b0 02 00 00 01` → `...00` — maker-select lower bound,
   lets index 0 (GEMBALLA) be selected. *This is the region lock.*
 - `0x7A8209`, `0x7A86AB`, `0x7A87A8`, `0x7A88B3`:

@@ -21,6 +21,15 @@ widescreen_hud = true
 # and it has been measured against the in-race HUD rather than every screen.
 widescreen_anchor = false
 
+# Unlock the GEMBALLA maker, which the Export build hides, and put the story
+# rival who drives the 964 RSR back in it. Applied in memory only -- `main` on
+# disk is never touched -- and only if the bytes at every offset are what this
+# build should have. The maker half also needs data/car/gem_964_38RS,
+# gem_964_RSR and gem_997_AVA to hold their models: an Export dump ships those
+# three directories empty, and the loader leaves the maker locked rather than
+# offer a car the engine cannot load.
+gemballa = false
+
 # Wait for the display's refresh before swapping.
 vsync = true
 # Frame rate cap, 0 for none. This is the game's speed, not a performance
