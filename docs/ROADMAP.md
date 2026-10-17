@@ -618,10 +618,28 @@ File offset + `0x8048000` = virtual address. **3DX+ Export v386**
 - A separate 3DX profile exists (`DX_SIZE` 24288148, maker index at
   `[esi+0x494]`, `clV363CardData`, one byte edit at `0x1390E90`: `35`→`34`).
 
-**(b) Asset porting** — ~150 sprites, three car folders (`gem_964_38RS`,
-`gem_964_RSR`, `gem_997_AVA`), `.anm` files and `car.lua`, copied from a **JPN
-dump**. Cannot be replaced by code; document running tattoohanz's
-`copy_gemballa_assets` and keep it an offline step.
+**(b) Asset porting** — **three car folders only, 166 files.** Measured
+against a JPN dump on 2026-10-17, and narrower *and* harder than it looked:
+
+| | 3DX+ Export | JPN |
+|---|---|---|
+| `data/car/gem_964_38RS` | directory exists, **0 files** | 57 |
+| `data/car/gem_964_RSR` | **0 files** | 67 |
+| `data/car/gem_997_AVA` | **0 files** | 42 |
+| `data/characar/gem_*` (Shima1st, Shima2nd, Masaki, Kijima, Normal) | complete | byte-identical |
+| 92 gem-named menu sprites and `.anm` | present, under `sprite-us`/`anime-us` | 50 identical, 25 localised |
+
+So Namco shipped Export with the Gemballa **menu art and rival cars intact**
+and stripped only the **player-selectable models**, then locked the maker.
+That is self-consistent: the story needs Shima's 964 whether or not you can
+buy one.
+
+Two consequences. The car folders genuinely cannot be replaced by code and
+need a JPN dump, so keep that an offline step. But **do not copy the sprites
+or `.anm`** — the Export dump already has all 92, and 25 of them differ only
+because they carry English text. Copying the JPN ones would replace the
+localised menu art with Japanese for no gain, which is what
+`copy_gemballa_assets` would do if pointed at the whole tree.
 
 **Optional dialogue fix** (from tattoohanz's *widescreen* installer manifest,
 same 3DX+ Export target): write 3 UTF-32 strings into free space at
