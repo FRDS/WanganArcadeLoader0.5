@@ -593,7 +593,23 @@ File offset + `0x8048000` = virtual address. **3DX+ Export v386**
   OR-ing error flag 2 for Gemballa cards, which otherwise makes the card
   invalid.
 - `0x12ED6B0`: dword `277` → `247` — story chara 30 (Masaki) drives the
-  Gemballa again.
+  Gemballa again. **He is the only one.** Diffed against a JPN dump on
+  2026-10-17 (`H:\wmmt3dxp`, `main` 24,855,892 bytes): of the 32 story
+  characters, exactly one car id differs between the builds. Nobody asking
+  "does it change Shima's car too?" needs to wonder again — no, and no one
+  else's either, so tattoohanz's single edit is complete rather than partial.
+  Fields 2–4 of every record *do* differ, consistently 11–17 lower in JPN,
+  which is why they are not car data but string or dialogue indices that
+  shifted when the Export build added content.
+
+  **The table can be found by shape rather than by offset**, which is worth
+  preferring over the hardcoded address above. It is 32 records of 24 bytes,
+  `[car_id, 39, a, b, c, 0]`, and scanning for runs where field 1 is `39` and
+  field 5 is `0` finds exactly one such run in each binary — `0x012ED3E0` on
+  3DX+ Export, `0x012EB660` on the JPN dump — with the Export hit landing
+  precisely where Masaki's documented offset says the table starts. A search
+  costs a few million dword compares once at startup and makes this edit
+  build-independent, where an offset is one revision away from being wrong.
 - Optional card-conversion NOPs at `0x6825F4`, `0x683CA7`, `0x684FD5`,
   `0x68666E` (only matter for v337/v363 cards upgrading to v386).
 - 24 frame-table immediates at `0x7A8028`–`0x7A8130` (`c7 45 xx` stack
