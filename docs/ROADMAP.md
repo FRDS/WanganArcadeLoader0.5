@@ -598,8 +598,15 @@ unreliable and the expected bytes as the real identifier, which is what
 - `0x6895A8`: `83 c8 02` → `90 90 90` — `clV386CardData::assign()` stops
   OR-ing error flag 2 for Gemballa cards, which otherwise makes the card
   invalid.
-- `0x12ED6B0`: dword `277` → `247` — story chara 30 (Masaki) drives the
-  Gemballa again. **He is the only one.** Diffed against a JPN dump on
+- `0x12ED6B0`: dword `277` → `247` — story chara 30 drives the Gemballa
+  again. **It is Shima, not Masaki, and the car is his Blackbird**: resolving
+  the car-id table absolutely — 311 records of 24 bytes with the name pointer
+  at `+8`, laid out identically in both builds — gives 247 as
+  `gem_964_38RS_Shima1st`, 251 as `gem_964_RSR_Masaki`, and Export's 277 as
+  `nis_BNR32_Feeling`. The "Masaki" label here was wrong and was believed
+  twice before an in-game observation forced the check; `nis_Z33_Shima` is a
+  *different* entry, chara 20, identical in both builds, which is what makes
+  the mistake easy to keep making. **He is the only one.** Diffed against a JPN dump on
   2026-10-17 (`H:\wmmt3dxp`, `main` 24,855,892 bytes): of the 32 story
   characters, exactly one car id differs between the builds. Nobody asking
   "does it change Shima's car too?" needs to wonder again — no, and no one

@@ -14,11 +14,16 @@
 //! right -- which is exactly the situation where trusting an offset list
 //! blindly would corrupt a running game.
 //!
-//! What the unlock does *not* do, measured against a JPN dump on 2026-10-17:
-//! touch any story car but Masaki's. All 32 entries in the table were compared
-//! and his is the only one that differs, so the rivals who already drive
-//! Gemballas in this build -- Shima's 964 among them -- were never hidden and
-//! need nothing done to them.
+//! The story edit restores **Shima's Blackbird**. The roadmap called chara 30
+//! "Masaki" and that is wrong: resolving the car-id table absolutely -- 311
+//! records of 24 bytes, name pointer at `+8` -- gives id 247 as
+//! `gem_964_38RS_Shima1st` and 251 as `gem_964_RSR_Masaki`. Export puts chara
+//! 30 on 277, `nis_BNR32_Feeling`. All 32 entries were compared against a JPN
+//! dump and chara 30 is the only one that differs, so this is the whole of the
+//! story-car change.
+//!
+//! `nis_Z33_Shima` is a different entry, chara 20, identical in both builds --
+//! so seeing Shima in a Z33 is not necessarily this edit failing.
 
 use crate::*;
 
@@ -76,16 +81,16 @@ const CARS: [Patch; 6] = [
 	},
 ];
 
-/// Puts story chara 30 back in the Gemballa 964 RSR.
+/// Puts story chara 30 -- Shima -- back in the Gemballa 964 38RS.
 ///
 /// Separate from `CARS` because it is safe on its own: a rival's car comes
-/// from `data/characar/gem_964_RSR_Masaki`, which the Export dump ships
+/// from `data/characar/gem_964_38RS_Shima1st`, which the Export dump ships
 /// complete, so this needs none of the models `CARS` does.
 const MASAKI: [Patch; 1] = [Patch {
 	offset: 0x12E_D6B0,
 	expect: &[0x15, 0x01, 0x00, 0x00],
 	write: &[0xf7, 0x00, 0x00, 0x00],
-	what: "story chara 30 drives the Gemballa 964 RSR again (277 -> 247)",
+	what: "story chara 30 (Shima) drives the Gemballa 964 38RS again (277 -> 247)",
 }];
 
 /// Whether every patch in the set finds the bytes it expects.
@@ -203,10 +208,11 @@ mod tests {
 		assert!(!all_present(&MASAKI, &|_, _| None));
 	}
 
-	/// The Masaki edit is the one documented car-id change, and 247 is what a
-	/// JPN dump holds at that offset.
+	/// Car 247 is `gem_964_38RS_Shima1st` in both builds, read off the car
+	/// table rather than taken from the roadmap, which mislabelled this
+	/// entry as Masaki's.
 	#[test]
-	fn masaki_goes_back_to_the_jpn_car_id() {
+	fn shima_goes_back_to_the_jpn_car_id() {
 		let before = u32::from_le_bytes(MASAKI[0].expect.try_into().unwrap());
 		let after = u32::from_le_bytes(MASAKI[0].write.try_into().unwrap());
 		assert_eq!(before, 277);
