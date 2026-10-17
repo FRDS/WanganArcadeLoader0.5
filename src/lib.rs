@@ -8,6 +8,7 @@ use std::str::FromStr;
 pub mod adm;
 pub mod al;
 pub mod card;
+pub mod carparts;
 pub mod elfsym;
 pub mod gemballa;
 pub mod hook;
@@ -136,6 +137,11 @@ pub struct Config {
 	/// fixed-function `glOrtho` is watched at any resolution.
 	res_log: bool,
 
+	/// Log every car the engine resolves by id, with the folder name it maps
+	/// to. This is how to find out what a story rival is actually being
+	/// handed, which no table in the binary turned out to answer.
+	car_log: bool,
+
 	/// Ask for an OpenGL debug context and log the driver's own messages. The
 	/// world is drawn with fixed-function and multitexture state, not Cg, so
 	/// this is the only account of why it might come out wrong.
@@ -176,6 +182,7 @@ const fn default_config() -> Config {
 		cg_log: false,
 		file_log: false,
 		card_log: false,
+		car_log: false,
 		res_log: false,
 		gl_debug: false,
 		shader_mode: ShaderMode::Auto,
@@ -632,6 +639,7 @@ pub(crate) unsafe fn init() {
 		res::init();
 	}
 	hud::init();
+	carparts::init();
 	gemballa::init();
 
 	platform::load_plugins(&GAME_VERSION);

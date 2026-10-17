@@ -175,6 +175,32 @@ fn models_present() -> bool {
 /// ask of any table we think drives something: set the whole thing to one
 /// value and see if the game notices.
 const PROBE_ALL: bool = false;
+
+/// **Diagnostic.** Every dword in `.rodata` that holds 277, the model id the
+/// engine actually resolves to `nis_Z33_Shima` for the story Episode 7 rival.
+///
+/// The roster table is not the source -- forcing all 32 of its entries to one
+/// car changed nothing -- and `car_log` shows no id-space conversion, so the
+/// 277 the game reads is stored directly somewhere else. There are only
+/// thirteen of them in the whole of `.rodata`, so asking the game which one
+/// matters is one run, where reasoning about which looks like story data has
+/// now been wrong three times.
+const PROBE_277: bool = false;
+const RODATA_277: [usize; 13] = [
+	0x012A_D8F8,
+	0x012E_2168,
+	0x012E_51A4,
+	0x012E_6E9C,
+	0x012E_D6B0,
+	0x0139_B790,
+	0x013D_C314,
+	0x013D_CD24,
+	0x013D_CD28,
+	0x013D_CD2C,
+	0x013D_CD30,
+	0x0140_4570,
+	0x0140_5020,
+];
 const ROSTER: usize = 0x12E_D3E0;
 const ROSTER_LEN: usize = 32;
 
@@ -189,6 +215,20 @@ pub unsafe fn init() {
 
 	// Shima first, because it is the half that stands alone.
 	apply(&MASAKI, "the story car");
+
+	if PROBE_277 {
+		let mut done = 0;
+		for off in RODATA_277 {
+			if read_image(off, 4).as_deref() == Some(&277u32.to_le_bytes()) {
+				platform::write_memory((BASE + off) as *mut (), &247u32.to_le_bytes());
+				done += 1;
+			}
+		}
+		platform::log(&format!(
+			"gemballa: PROBE -- {done} of {} .rodata sites holding 277 set to 247",
+			RODATA_277.len()
+		));
+	}
 
 	if PROBE_ALL {
 		for i in 0..ROSTER_LEN {
