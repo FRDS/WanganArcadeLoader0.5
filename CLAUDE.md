@@ -179,12 +179,22 @@ numbers.
   the box, the way `set_viewport` keys on `88x82` for the minimap. `res_log`
   reports every projection the engine asks for, deduplicated; it is how the
   2D layer's box was measured in the first place.
-- `hud.rs` — measurement for the widescreen work: wraps each race console's
-  `draw` so the sprites it draws can be attributed to it, and reports each
-  console's x range. Behind `res_log`, installs nothing otherwise. The field
-  offsets it reads were taken from the dump's own 20-byte setters —
-  `clSpriteAnime` keeps x at `+0x4C`, `clSpriteFont` at `+0x20`, and the two
-  layouts differ.
+- `hud.rs` — widescreen **placement**: moves each HUD widget out to the edge
+  it was drawn against, behind `widescreen_anchor` (off by default) and only
+  while a race is on screen. Everything goes through
+  `clSpriteManager::entry`, where `applyUser` is forced — an entry the engine
+  finds clean carries stale vertices — and the four finished x floats at
+  `+0x08`/`+0x14`/`+0x20`/`+0x2c` are offset by the bar. A *widget* is
+  whatever brackets the quads: an anime by its `.anm` length and frame count,
+  a string by its draw call, and a console's raw entries by runs of quads
+  within 8 units of each other. `side` decides from the union over every
+  frame, never shrinking, and is pure and unit-tested over every widget real
+  races produced. **Menus are excluded deliberately** — they are layouts whose
+  pieces only mean anything side by side, and per-widget decisions tear them
+  apart. Also the measurement, behind `res_log`: per-widget extents, entry
+  classes, and what brackets what. The per-class offsets it reads came from
+  the dump's own 20-byte setters — `clSpriteAnime` keeps x at `+0x4C`,
+  `clSpriteFont` at `+0x20`, and the two layouts differ.
 - `card.rs` — emulates the magnetic card printer against `card.bin`, which is
   207 bytes: three 69-byte tracks and a CRC-16/CCITT-FALSE at `0xCD` over the
   rest. Most of it is the status bytes rather than the data:

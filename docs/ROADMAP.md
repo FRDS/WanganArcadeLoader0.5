@@ -19,6 +19,7 @@ LINE's plugin.
 | P2 window + OpenGL | **done, rendering confirmed on hardware** |
 | P3 input (keyboard, pads, wheels) | keyboard and pad confirmed; wheels/pedals still untested |
 | P4 custom resolution + file/TTY redirects | done; resolution proven on hardware at 1440×1080 windowed and borderless, `file_redirect` and `ignore_custom_ioctls` both on Windows now |
+| Widescreen placement (`widescreen_anchor`) | in-race HUD done and confirmed on hardware; menus and full-width art deliberately excluded |
 | P5 custom BGM | not started |
 | P6 Gemballa unlock | not started, fully researched below |
 | P7 network / localhost split-screen | not started |
@@ -156,11 +157,40 @@ that reaches for this: only the **six-float** overload is ever called — the
 `igPlane`/`igVec3f` one and both `igMatrix44d` ones never fired — and it is
 reached a few times a frame, not once a sprite.
 
-What is still open is **placement**: elements keep their 640-space coordinates,
-so the HUD occupies the middle 960 of 1280 pixels and anything anchored to an
-edge sits inward of it. A race may also ask for boxes the attract screens do
-not; `res_log` is how to see them, and `widen` leaves anything it does not
-recognise alone.
+**Placement is done for the in-race HUD**, on 2026-10-17, behind
+`widescreen_anchor` (off by default). Elements used to keep their 640-space
+coordinates, so the HUD sat in the middle 960 of 1280 pixels; `hud.rs` now
+moves each widget by the bar, and on hardware the car's dial went from 117
+units short of the edge to 18, against 19 measured at 4:3. A race may still
+ask for boxes the attract screens do not; `res_log` is how to see them, and
+`widen` leaves anything it does not recognise alone.
+
+Three things about it that are not obvious and cost a day to learn:
+
+- **A widget is whatever brackets its quads**, and there are three kinds. An
+  anime by its `.anm`, a string by its draw call, and — for the raw entries a
+  console submits with neither around them — a run of quads within 8 units of
+  each other. Taking a whole console instead gives `-64.00 .. 685.00`, wider
+  than the space, because a console is a container for several unrelated
+  pieces. This is what finally moved the meter, which per the section below is
+  not a `clSpriteAnime` and so had no widget at all.
+- **`applyUser` has to be forced before the vertices are read**, not only
+  before they are written. `entry()` runs it when the dirty byte at `+0x74`
+  is not 1, so an entry the engine finds clean carries whatever was last left
+  in its vertices — menu strings read `0.00 .. 0.00` against origins of 48 and
+  320. The moving path always forced it, so the two paths measured different
+  things and the difference looked like a property of the strings.
+- **Menus must not be anchored.** The name entry keyboard is many widgets and
+  one layout: `ABCDE` and `FGHIJ` went `-bar`, `LMNO` and `PQRST` went `+bar`,
+  `K` straddled the middle, and the row came apart with 213 units of gap
+  either side of it. Which is the same conclusion tattoohanz reached — he used
+  assets for menus and did not move the in-race HUD — arrived at from the
+  other direction. Anchoring them needs layout-level grouping, which is not
+  built.
+
+Still open after it: the **`wide`** population — full-width art like
+`-480..1120` — which needs stretching rather than shifting, since a shift only
+moves the gap to the other edge.
 
 Also open, and measured on 2026-10-06: the engine builds **the same box a
 second time through the fixed-function `glOrtho`**, which is reported but not
@@ -225,10 +255,14 @@ unlinking a pool entry and making a vtable call at `+0x8` — so interception
 was going to be at each class's `draw`, patch-call-restore. **The C++ loader
 corrects both halves of that**; see below.
 
-`hud.rs` is the measurement for this, behind `res_log`: it wraps each race
-console's `draw` so the sprites drawn inside it can be attributed, and reports
-each console's x range, which is what decides its anchor. **It also found that
-sprites are not drawn on the main thread**, which any eventual nudge has to
+`hud.rs` both measures this and does it. **The console wrappers it started as
+answered their own question with a no**: five of the twelve consoles never
+draw at all, five submit one object a frame at x = 0, and ten of every eleven
+sprites arrive under no console — so attribution by bracketing `draw` does not
+work, and the positions come from `clSpriteManager::entry` instead, where the
+four vertex x floats are final. The wrappers are still installed, because they
+are the only thing that says a race is on screen rather than a menu. **It also
+found that sprites are not drawn on the main thread**, which the nudge has to
 account for — `adm.rs` already marshals sprite-adjacent calls onto the main
 thread for exactly this reason.
 
