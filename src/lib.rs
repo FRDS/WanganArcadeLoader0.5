@@ -76,6 +76,19 @@ pub struct Config {
 	/// off to get the old behaviour without giving up the resolution.
 	widescreen_hud: bool,
 
+	/// Push HUD widgets back out to the edges they were drawn against.
+	///
+	/// `widescreen_hud` corrects the layer's *proportions*; this corrects its
+	/// *placement*. Without it everything keeps its 640-space coordinates, so
+	/// at 16:9 the whole HUD sits in the middle 75% of the screen and the
+	/// minimap's frame ends up 160 pixels right of the map it frames.
+	///
+	/// Off by default: it moves things, and the set of widgets it has been
+	/// measured against is the in-race HUD. Needs `widescreen_hud`, since the
+	/// distance to move is the margin that one opens up, and does nothing at
+	/// 4:3 where that margin is zero.
+	widescreen_anchor: bool,
+
 	file_redirect: Option<Vec<FileRedirect>>,
 
 	/// Wait for the display's refresh before swapping. Right on any display
@@ -146,6 +159,7 @@ const fn default_config() -> Config {
 		width: 640,
 		height: 480,
 		widescreen_hud: true,
+		widescreen_anchor: false,
 		file_redirect: None,
 		vsync: true,
 		fps_limit: if cfg!(windows) { 60 } else { 0 },

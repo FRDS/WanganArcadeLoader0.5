@@ -115,7 +115,7 @@ unsafe extern "C" fn sprite_anime_draw(this: *const c_void) -> *const c_void {
 	let previous = CURRENT_MARKER;
 	let previous_widget = CURRENT_WIDGET;
 	CURRENT_MARKER = MARKER_ANIME;
-	CURRENT_WIDGET = widget_slot(anime_key(this));
+	CURRENT_WIDGET = widget_slot(KIND_ANIME, anime_key(this));
 	let result = call_game(ORIGINAL_SPRITE_ANIME, (this,));
 	CURRENT_MARKER = previous;
 	CURRENT_WIDGET = previous_widget;
@@ -126,10 +126,15 @@ unsafe extern "C" fn sprite_font_draw(this: *const c_void) -> *const c_void {
 	record(this, 0x20, true);
 	let previous = CURRENT_MARKER;
 	let previous_run = FONT_RUN;
+	let previous_widget = CURRENT_WIDGET;
 	CURRENT_MARKER = MARKER_FONT;
 	FONT_RUN = Run::EMPTY;
+	// The run decides this call for the summary; the slot carries the union
+	// across frames, which is what the move needs.
+	CURRENT_WIDGET = widget_slot(KIND_FONT, font_key(this));
 	let result = call_game(ORIGINAL_SPRITE_FONT, (this,));
-	finish_string();
+	finish_string(this);
+	CURRENT_WIDGET = previous_widget;
 	FONT_RUN = previous_run;
 	CURRENT_MARKER = previous;
 	result
@@ -173,7 +178,16 @@ const SIDE_RIGHT: usize = 1;
 const SIDE_STAY: usize = 2;
 const SIDE_WIDE: usize = 3;
 const SIDE_OUT: usize = 4;
-const SIDE_NAMES: [&str; 5] = ["-bar", "+bar", "stay", "wide", "out"];
+const SIDE_NONE: usize = 5;
+const SIDE_NAMES: [&str; 6] = ["-bar", "+bar", "stay", "wide", "out", "none"];
+
+/// The narrowest extent that counts as a position. One unit is 1.5 pixels at
+/// 1280, so nothing visible is excluded.
+const MIN_WIDTH: f32 = 1.0;
+
+/// The longest a widget is made to wait for its animation to come round
+/// before it may be moved. Five seconds at the rate the game is held to.
+const SETTLE_CAP: u32 = 300;
 
 /// The space everything is authored in.
 const SPACE: f32 = 640.0;
@@ -191,6 +205,16 @@ const SPACE: f32 = 640.0;
 fn bar(render_aspect: f32) -> f32 {
 	SPACE / 2.0 * (render_aspect / (SPACE / 480.0) - 1.0)
 }
+
+/// The least slack `side` will work with, whatever the bar is.
+///
+/// The bar doubles as the slack because the widened box reaches exactly that
+/// far past the authored edges -- but at 4:3 the bar is zero, and then a
+/// widget like `anm 1432/2` at -30.00..130.00 is "outside the space" over
+/// nothing more than a soft sprite edge. Measured at 1280x960. Nothing moves
+/// at 4:3 so it changed no pixels, but the same collapse would happen at any
+/// aspect near it.
+const MIN_SLACK: f32 = 32.0;
 
 /// `bar()` for the configured render, worked out once at startup.
 static mut BAR: f32 = 0.0;
@@ -217,9 +241,18 @@ static mut BAR: f32 = 0.0;
 /// both columns; something projected does not. `39904/259` read 224..416 in
 /// one period and −268.80..908.80 in the next, and only the union caught it.
 fn side(min_x: f32, max_x: f32, slack: f32) -> usize {
-	if max_x - min_x > SPACE {
+	// No width is no position, whatever the arithmetic below would make of
+	// it. `anm 4392/60` sits at 0.00 .. 0.00 and the first build of the
+	// transform shoved it a bar to the left on the strength of `0 < 320`.
+	// It is a root or a container -- the same population the console table
+	// kept reporting as `x 0.00 .. 0.00` -- and nothing visible is zero
+	// quads wide.
+	let width = max_x - min_x;
+	if width.is_nan() || width < MIN_WIDTH {
+		SIDE_NONE
+	} else if width > SPACE {
 		SIDE_WIDE
-	} else if min_x < -slack || max_x > SPACE + slack {
+	} else if min_x < -slack.max(MIN_SLACK) || max_x > SPACE + slack.max(MIN_SLACK) {
 		SIDE_OUT
 	} else if max_x < CENTRE - DEAD_ZONE {
 		SIDE_LEFT
@@ -230,11 +263,30 @@ fn side(min_x: f32, max_x: f32, slack: f32) -> usize {
 	}
 }
 
-unsafe fn finish_string() {
+unsafe fn finish_string(this: *const c_void) {
 	if FONT_RUN.quads == 0 {
 		return;
 	}
 	FONT_STRINGS[side(FONT_RUN.min_x, FONT_RUN.max_x, BAR)] += 1;
+	// Once per slot: the object's own x and y beside the extent its quads
+	// came out at. These disagreed badly -- `txt@320,384` drew over 0..158
+	// against an origin of 320 -- which is what led to the stale-vertex
+	// finding, since `submit` now forces `applyUser` before reading. Kept as
+	// the check that it stays fixed: origin and extent should now agree.
+	if CURRENT_WIDGET != NO_WIDGET && !this.is_null() && !WIDGETS[CURRENT_WIDGET].announced {
+		WIDGETS[CURRENT_WIDGET].announced = true;
+		let x = (this as *const u8).add(0x20).cast::<f32>().read();
+		let y = (this as *const u8).add(0x24).cast::<f32>().read();
+		platform::log(&format!(
+			"hud: string at +0x20 ({x:.2}, {y:.2}) drew {} quads over x {:.2} .. {:.2}, \
+			 so origin+extent is {:.2} .. {:.2}",
+			FONT_RUN.quads,
+			FONT_RUN.min_x,
+			FONT_RUN.max_x,
+			x + FONT_RUN.min_x,
+			x + FONT_RUN.max_x
+		));
+	}
 	if FONT_RUN.min_x < FONT_MIN {
 		FONT_MIN = FONT_RUN.min_x;
 	}
@@ -262,14 +314,54 @@ unsafe fn finish_string() {
 //    once it grows past the middle. So `min_x`/`max_x` here are never reset --
 //    only the per-period quad count is.
 
-const MAX_WIDGETS: usize = 128;
+const MAX_WIDGETS: usize = 512;
 const NO_WIDGET: usize = usize::MAX;
+
+/// An anime, named by its `.anm`; a string, named by where it starts; or a
+/// console, named by its index.
+///
+/// The console kind exists because **the race meter is not a
+/// `clSpriteAnime`** -- the roadmap says so and hardware agrees: measured on
+/// 2026-10-17, the dial sat 123 units from the right edge at 16:9 against 19
+/// at 4:3, having never moved at all. Its entries arrive inside
+/// `clMeterConsole::draw2` with no anime and no font around them, so they had
+/// no widget, and `shift` returned zero before it considered anything. Same
+/// principle as a string: the call that brackets them is the grouping.
+const KIND_ANIME: u8 = 0;
+const KIND_FONT: u8 = 1;
+const KIND_CLUSTER: u8 = 2;
+
+/// How close two quads must be to belong to the same thing.
+///
+/// Taking a whole console as one widget does not work: `clMeterConsole`'s
+/// `draw1` submits 7 raw quads a frame spanning **-64.00 .. 685.00**, which
+/// is wider than the 640 space it lives in, so it classified `wide` and
+/// nothing moved. It is a container for several unrelated pieces -- a dial
+/// on the right, something else out at the left -- not a single widget.
+///
+/// So raw entries are gathered into runs of touching quads instead. A dial
+/// is a disc of quads that overlap or abut, and the gear display twenty units
+/// away is a different run. Eight units is wide enough to bridge the seams
+/// inside one piece of art and far too narrow to bridge the gaps between
+/// pieces.
+const CLUSTER_GAP: f32 = 8.0;
+
+/// How coarsely a string's origin is rounded to key its slot. Four units
+/// absorbs the jitter of a readout whose origin is derived from its own
+/// width, without merging two pieces of text that sit side by side.
+const SLOT: f32 = 4.0;
 
 #[derive(Clone, Copy)]
 struct Widget {
 	used: bool,
-	/// The `.anm`'s length and frame count. Animes only -- a string is
-	/// grouped by its draw call instead; see `Run`.
+	/// What kind of thing this widget is, which decides how `key` reads and
+	/// how long it has to settle.
+	kind: u8,
+	/// An anime's `.anm` length and frame count, a string's rounded origin,
+	/// or a console's index. Never an address: keying strings by address is what
+	/// overflowed a 128-slot table 1,548 times in one race, because the game
+	/// churns through font objects. An origin is a place on the screen, and
+	/// the same piece of text comes back to it frame after frame.
 	key: (u32, u32),
 	/// Quads this period. The union below outlives it deliberately.
 	quads: u32,
@@ -281,17 +373,36 @@ struct Widget {
 	/// see `side`.
 	now_min: f32,
 	now_max: f32,
+	/// Whether this widget has finished at least one frame. Until it has, its
+	/// union is a part-built thing -- the quads of the frame in progress --
+	/// and a verdict taken from it would move the first half of a widget and
+	/// not the second.
+	settled: bool,
+	/// Frames this widget has drawn in, and the last one it drew in, so the
+	/// count is of frames and not of quads.
+	frames_seen: u32,
+	last_frame: u32,
+	/// Whether the log has already said this one is being moved. Said once
+	/// per widget rather than through `report.rs`, because this sits on the
+	/// per-entry path and a flag costs nothing where building the string to
+	/// deduplicate on would cost something sixty-five times a frame.
+	announced: bool,
 }
 
 impl Widget {
 	const EMPTY: Self = Self {
 		used: false,
+		kind: KIND_ANIME,
 		key: (0, 0),
 		quads: 0,
 		min_x: f32::INFINITY,
 		max_x: f32::NEG_INFINITY,
 		now_min: f32::INFINITY,
 		now_max: f32::NEG_INFINITY,
+		settled: false,
+		frames_seen: 0,
+		last_frame: 0,
+		announced: false,
 	};
 }
 
@@ -337,7 +448,7 @@ unsafe fn anime_key(this: *const c_void) -> (u32, u32) {
 /// Only animes get a slot, and their keys are stable and few -- which is the
 /// whole reason the table can be a fixed array that never evicts. Nothing
 /// here is keyed by an address.
-unsafe fn widget_slot(key: (u32, u32)) -> usize {
+unsafe fn widget_slot(kind: u8, key: (u32, u32)) -> usize {
 	let mut free = NO_WIDGET;
 	for (index, widget) in WIDGETS.iter().enumerate() {
 		if !widget.used {
@@ -346,7 +457,7 @@ unsafe fn widget_slot(key: (u32, u32)) -> usize {
 			}
 			continue;
 		}
-		if widget.key == key {
+		if widget.kind == kind && widget.key == key {
 			return index;
 		}
 	}
@@ -356,10 +467,49 @@ unsafe fn widget_slot(key: (u32, u32)) -> usize {
 	}
 	WIDGETS[free] = Widget {
 		used: true,
+		kind,
 		key,
 		..Widget::EMPTY
 	};
 	free
+}
+
+/// How a widget is written in the log.
+unsafe fn widget_name(widget: &Widget) -> String {
+	match widget.kind {
+		KIND_FONT => format!(
+			"txt@{},{}",
+			widget.key.0 as i32 * SLOT as i32,
+			widget.key.1 as i32 * SLOT as i32
+		),
+		KIND_CLUSTER => format!(
+			"{}#{}",
+			CONSOLES[widget.key.0 as usize].1,
+			widget.key.1
+		),
+		_ => format!("anm {}/{}", widget.key.0, widget.key.1),
+	}
+}
+
+/// The slot a string belongs to: where on the screen it starts.
+///
+/// A string has no `.anm` to be named by and its object address churns, but
+/// it is drawn at the same place frame after frame -- so the place is the
+/// identity. `clSpriteFont` keeps x at `+0x20` and y at `+0x24`, taken from
+/// the dump's own 20-byte setters.
+unsafe fn font_key(this: *const c_void) -> (u32, u32) {
+	if this.is_null() {
+		return (0, 0);
+	}
+	let x = (this as *const u8).add(0x20).cast::<f32>().read();
+	let y = (this as *const u8).add(0x24).cast::<f32>().read();
+	if !x.is_finite() || !y.is_finite() {
+		return (0, 0);
+	}
+	(
+		(x / SLOT).round() as i32 as u32,
+		(y / SLOT).round() as i32 as u32,
+	)
 }
 
 // ------------------------------------------------------------ sprite entries
@@ -407,6 +557,9 @@ const MARKER_NAMES: [&str; 3] = ["bare", "in anime", "in font"];
 static mut CURRENT_MARKER: usize = MARKER_BARE;
 
 static mut ENTRY_VPTRS: [*const (); ENTRY_CLASSES.len()] = [std::ptr::null(); ENTRY_CLASSES.len()];
+
+/// Classes already reported as drawing a quad with no width.
+static mut DEGENERATE_SEEN: [bool; UNKNOWN_CLASS + 1] = [false; UNKNOWN_CLASS + 1];
 
 /// The middle of the 640-space, and the roadmap's dead zone about it: a widget
 /// entirely left of `CENTRE - DEAD_ZONE` moves `-bar`, one entirely right of
@@ -458,22 +611,16 @@ const VERTEX_X: [usize; 4] = [0x08, 0x14, 0x20, 0x2c];
 /// Called **after** the original, because `entry()` runs `applyUser` when the
 /// dirty byte at `+0x74` is not 1 and only then are the vertices the ones that
 /// will be drawn. Reading first would see the previous frame's.
-unsafe fn record_entry(entry: *const c_void) {
-	if entry.is_null() {
-		return;
-	}
-	let vptr = entry.cast::<*const ()>().read();
-	let class = ENTRY_VPTRS
-		.iter()
-		.position(|known| *known == vptr)
-		.unwrap_or(UNKNOWN_CLASS);
-	// This entry's own extent first, so the side it falls on is decided from
-	// the whole quad rather than from whichever vertex came last.
+/// This entry's own extent, or `None` if no vertex was a number.
+///
+/// Taken from the whole quad rather than from whichever vertex came last, so
+/// the side it falls on is decided from all four.
+unsafe fn entry_extent(entry: *const c_void) -> Option<(f32, f32)> {
 	let mut low = f32::INFINITY;
 	let mut high = f32::NEG_INFINITY;
 	for offset in VERTEX_X {
 		let x = (entry as *const u8).add(offset).cast::<f32>().read();
-		// NaN fails both, as in `record` above, and is simply not counted.
+		// NaN fails both comparisons and is simply not counted.
 		if x < low {
 			low = x;
 		}
@@ -481,10 +628,36 @@ unsafe fn record_entry(entry: *const c_void) {
 			high = x;
 		}
 	}
-	if low > high {
-		// Every vertex was NaN. Counted, but it has no position to file.
-		ENTRIES[class][CURRENT_MARKER].count += 1;
-		return;
+	(low <= high).then_some((low, high))
+}
+
+unsafe fn record_entry(entry: *const c_void, low: f32, high: f32, owner: usize) {
+	let vptr = entry.cast::<*const ()>().read();
+	let class = ENTRY_VPTRS
+		.iter()
+		.position(|known| *known == vptr)
+		.unwrap_or(UNKNOWN_CLASS);
+
+	// A quad with no width, after `applyUser` has run, means the vertices are
+	// not where this class keeps its position. The roadmap puts a 2x3 affine
+	// at `+0x7c` with its translation at `+0x8c`/`+0x90`; if that holds a
+	// sensible x while the vertices are zero, then for this class the
+	// vertices are the wrong thing to read *and* the wrong thing to write,
+	// and the offset belongs in the affine. Said once per class, so it costs
+	// nothing on a path that runs sixty-five times a frame.
+	if low >= high && !DEGENERATE_SEEN[class] {
+		DEGENERATE_SEEN[class] = true;
+		let tx = (entry as *const u8).add(0x8c).cast::<f32>().read();
+		let ty = (entry as *const u8).add(0x90).cast::<f32>().read();
+		let name = if class == UNKNOWN_CLASS {
+			"(unknown)"
+		} else {
+			ENTRY_CLASSES[class].1
+		};
+		platform::log(&format!(
+			"hud: {name} drew a quad with no width -- vertices x all {low:.2}, \
+			 but the affine at +0x8c holds ({tx:.2}, {ty:.2})"
+		));
 	}
 
 	let tally = &mut ENTRIES[class][CURRENT_MARKER];
@@ -514,9 +687,16 @@ unsafe fn record_entry(entry: *const c_void) {
 		if high > FONT_RUN.max_x {
 			FONT_RUN.max_x = high;
 		}
-	} else if CURRENT_WIDGET != NO_WIDGET {
-		let widget = &mut WIDGETS[CURRENT_WIDGET];
+	}
+	if owner != NO_WIDGET {
+		let widget = &mut WIDGETS[owner];
 		widget.quads += 1;
+		// Frames, not quads: a widget drawing ten quads a frame is no nearer
+		// having shown its whole extent than one drawing a single quad.
+		if widget.last_frame != FRAMES {
+			widget.last_frame = FRAMES;
+			widget.frames_seen += 1;
+		}
 		if low < widget.min_x {
 			widget.min_x = low;
 		}
@@ -534,26 +714,270 @@ unsafe fn record_entry(entry: *const c_void) {
 
 unsafe extern "C" fn sprite_entry(this: *const c_void, entry: *const c_void) -> *const c_void {
 	report_thread_once(&mut ENTRY_THREAD_REPORTED, "a sprite entry");
-	let result = call_game(ORIGINAL_ENTRY, (this, entry));
-	record_entry(entry);
-	result
+	submit(ORIGINAL_ENTRY, this, entry)
 }
 
 unsafe extern "C" fn sprite_entry_after(
 	this: *const c_void,
 	entry: *const c_void,
 ) -> *const c_void {
-	let result = call_game(ORIGINAL_ENTRY_AFTER, (this, entry));
-	record_entry(entry);
-	result
+	submit(ORIGINAL_ENTRY_AFTER, this, entry)
+}
+
+// ------------------------------------------------------------------ the move
+
+/// Whether the anchor is on, settled once at startup.
+static mut ANCHOR: bool = false;
+
+/// Whether widgets are being moved, for `res.rs` -- the minimap's viewport is
+/// placed by a different mechanism and has to follow the frame that `entry`
+/// moves, or the art and its box come apart.
+pub fn anchoring() -> bool {
+	unsafe { ANCHOR }
+}
+
+/// Measures one entry, moves it if its widget says so, and submits it.
+///
+/// The order is the whole trick, and the roadmap paid for it: `entry()` calls
+/// `applyUser` whenever the dirty byte at `+0x74` is not 1, and *then* copies
+/// twelve floats into the draw buffer. So anything written into the vertices
+/// before `entry()` runs is thrown away by the `applyUser` it goes on to make.
+/// Calling `applyUser` here, marking the entry clean and only then moving the
+/// finished vertices is the sequence that survives, and it works for every
+/// entry class -- including the plain ones whose coordinates are absolute and
+/// the matrix ones rebuilt from the affine at `+0x7c`.
+///
+/// The measurement is taken from the finished vertices *before* they are
+/// moved. Reading them after would feed the shift back into the union and
+/// walk each widget off the screen a bar per frame.
+unsafe fn submit(
+	original: *const (),
+	this: *const c_void,
+	entry: *const c_void,
+) -> *const c_void {
+	if entry.is_null() {
+		return call_game(original, (this, entry));
+	}
+
+	// **Finish the vertices first, always.** `entry()` runs `applyUser` only
+	// when the dirty byte at `+0x74` is not 1, so for an entry that is
+	// already clean the floats are whatever was last left in them. Measured
+	// 2026-10-17: every string in a menu read `9 quads over x 0.00 .. 0.00`
+	// against an origin of 48 or 320, while the same strings read 158..290
+	// in the moving path, which forces `applyUser` on its way through. The
+	// two paths were measuring different things and the difference looked
+	// like a property of the strings.
+	finish_vertices(entry);
+	let Some((low, high)) = entry_extent(entry) else {
+		return call_game(original, (this, entry));
+	};
+
+	// Who owns this quad. An anime or a string that is drawing claims its
+	// own; a raw entry submitted straight by a console belongs to the run of
+	// touching quads it falls in, because a console is a container for
+	// several unrelated pieces rather than one widget.
+	let owner = if CURRENT_WIDGET != NO_WIDGET {
+		CURRENT_WIDGET
+	} else if CURRENT_CONSOLE != NO_CONSOLE {
+		cluster_slot(CURRENT_CONSOLE, low, high)
+	} else {
+		NO_WIDGET
+	};
+
+	// Measured before it is moved. Reading afterwards would feed the shift
+	// back into the union and walk the widget off the screen a bar a frame.
+	record_entry(entry, low, high, owner);
+	let by = shift(owner);
+	if by != 0.0 {
+		offset_x(entry, by);
+	}
+	call_game(original, (this, entry))
+}
+
+/// Runs `applyUser` -- vtable slot 2, the call at `+0x8` -- and marks the
+/// entry clean so `entry()` will not run it again over the top.
+unsafe fn finish_vertices(entry: *const c_void) {
+	let vptr = entry.cast::<*const *const ()>().read();
+	if vptr.is_null() {
+		return;
+	}
+	let apply_user = vptr.add(2).read();
+	if apply_user.is_null() {
+		return;
+	}
+	call_game::<_, ()>(apply_user, (entry,));
+	(entry as *mut u8).add(0x74).write(1);
+}
+
+/// Moves the four finished vertex x floats, which is the whole transform.
+unsafe fn offset_x(entry: *const c_void, by: f32) {
+	for offset in VERTEX_X {
+		let at = (entry as *mut u8).add(offset).cast::<f32>();
+		at.write(at.read() + by);
+	}
+}
+
+/// How far the widget now drawing should move.
+///
+/// Zero unless the verdict is a clean `-bar` or `+bar`. `stay` is across the
+/// middle, `wide` wants stretching rather than shifting, and `out` is not in
+/// this space at all -- the rival marker jumps every time it crosses the dead
+/// zone if you anchor it. Zero too for a string, which has no settled union
+/// to decide from, and for a widget that has not finished a frame yet.
+unsafe fn shift(owner: usize) -> f32 {
+	if !ANCHOR || owner == NO_WIDGET || !in_race() {
+		return 0.0;
+	}
+	let widget = WIDGETS[owner];
+	if !widget.settled || widget.min_x > widget.max_x {
+		return 0.0;
+	}
+	// Wait until the animation has had the chance to play through once,
+	// because until then the union is not the widget's extent but only as
+	// much of it as has been reached. `anm 10440/160` was measured at
+	// -84.30..462.30 in one run and 81.01..296.99 early in another: the
+	// first spans the middle and stays put, the second reads as a left-hand
+	// widget and moves. Acting on the second and then meeting the first is a
+	// widget that jumps a bar sideways mid-race. The frame count is already
+	// half of the fingerprint, so what to wait for is known rather than
+	// guessed; the cap keeps a 1200-frame animation from waiting 20 seconds,
+	// and nothing that long has ever come out as anything but `wide`.
+	// **Strings are measured but not moved.** Tried on hardware on
+	// 2026-10-17 and pulled the same run.
+	//
+	// Most of them are fine: `txt@160,128` drew over 158..290 against an
+	// origin of 160, `txt@80,80` over 78..268 against 80. Those are honest
+	// absolute positions in the 640-space and their `-bar` verdicts are
+	// right. But a minority disagree with their own origin -- `txt@48,40`
+	// drew over 0..78 against an origin of 48, and `txt@320,352` over 0..62
+	// against 320, which is wrong at both ends by about the origin. Either
+	// those quads are local to their object, or a degenerate frame at zero
+	// has poisoned a union that by design never shrinks.
+	//
+	// Those outliers were all seen on menu screens, and `in_race` above now
+	// keeps the anchor away from those entirely. In a race the strings are
+	// right -- the player's name sits where it should beside the speed
+	// readout, confirmed on hardware. So strings move again, inside a race
+	// only, and `finish_string` keeps logging the origin beside the extent
+	// so the disagreement can still be chased down.
+	//
+	// A string has no animation to come round, so one frame of it is enough;
+	// an anime waits for its own frame count.
+	// Only an anime has an animation to come round; a string and a console
+	// are complete as soon as one frame of them has been seen.
+	let needed = if widget.kind == KIND_ANIME {
+		widget.key.1.clamp(1, SETTLE_CAP)
+	} else {
+		1
+	};
+	if widget.frames_seen < needed {
+		return 0.0;
+	}
+	let by = match side(widget.min_x, widget.max_x, BAR) {
+		SIDE_LEFT => -BAR,
+		SIDE_RIGHT => BAR,
+		_ => 0.0,
+	};
+	// Said once per widget, so a run that reaches no race still shows in the
+	// log whether the transform fired at all and on what.
+	if by != 0.0 && !widget.announced {
+		WIDGETS[owner].announced = true;
+		let name = widget_name(&widget);
+		platform::log(&format!(
+			"hud: moving {name} by {by:+.2}, it sits at {:.2} .. {:.2}",
+			widget.min_x, widget.max_x
+		));
+	}
+	by
 }
 
 unsafe fn inside_console(index: usize, this: *const c_void) -> *const c_void {
 	let previous = CURRENT_TAG;
+	let previous_widget = CURRENT_WIDGET;
 	CURRENT_TAG = index + 1;
+	CONSOLE_FRAME = FRAMES;
+	// Raw entries drawn straight by the console -- the meter's among them --
+	// are gathered into runs of touching quads within it. An anime or a
+	// string inside the console claims its own entries instead, and puts
+	// this back when it returns.
+	let previous_console = CURRENT_CONSOLE;
+	CURRENT_CONSOLE = index;
+	CURRENT_WIDGET = NO_WIDGET;
 	let result = call_game(ORIGINAL_CONSOLES[index], (this,));
+	CURRENT_CONSOLE = previous_console;
+	CURRENT_WIDGET = previous_widget;
 	CURRENT_TAG = previous;
 	result
+}
+
+/// The console whose own drawing is in progress, if any.
+static mut CURRENT_CONSOLE: usize = NO_CONSOLE;
+const NO_CONSOLE: usize = usize::MAX;
+
+/// The run of touching quads a raw entry belongs to, adding one if it starts
+/// a new run.
+///
+/// Runs are kept per console and never merged. Two that grow until they touch
+/// stay separate, which is the conservative way round: a run that should have
+/// been one piece moves in two halves that were already going the same way,
+/// whereas merging eagerly risks chaining the whole console into one `wide`
+/// blob again -- which is the failure this exists to fix.
+unsafe fn cluster_slot(console: usize, low: f32, high: f32) -> usize {
+	let mut free = NO_WIDGET;
+	let mut ordinal = 0;
+	for (index, widget) in WIDGETS.iter().enumerate() {
+		if !widget.used {
+			if free == NO_WIDGET {
+				free = index;
+			}
+			continue;
+		}
+		if widget.kind != KIND_CLUSTER || widget.key.0 as usize != console {
+			continue;
+		}
+		ordinal += 1;
+		if low <= widget.max_x + CLUSTER_GAP && high >= widget.min_x - CLUSTER_GAP {
+			return index;
+		}
+	}
+	if free == NO_WIDGET {
+		WIDGETS_LOST += 1;
+		return NO_WIDGET;
+	}
+	WIDGETS[free] = Widget {
+		used: true,
+		kind: KIND_CLUSTER,
+		key: (console as u32, ordinal),
+		..Widget::EMPTY
+	};
+	free
+}
+
+/// The last frame a race console drew anything.
+static mut CONSOLE_FRAME: u32 = 0;
+/// How long after one the anchor keeps working, so it does not flicker off
+/// between two consoles in the same frame or across a brief gap.
+const RACE_GRACE: u32 = 30;
+
+/// Whether a race is on screen, which is the only place the anchor is safe.
+///
+/// **Menus must not be anchored.** Measured on 2026-10-17, on the name entry
+/// screen: its character grid is laid out as many separate widgets, so
+/// `ABCDE` and `FGHIJ` went `-bar`, `LMNO` and `PQRST` went `+bar`, `K`
+/// straddled the middle and stayed, and the row came apart with 213 units of
+/// gap either side of the `K`. "Enter" was pushed into "lower case" the same
+/// way. Deciding each widget on its own is right for a race HUD, whose
+/// clusters really are independent and already sit near the edges, and wrong
+/// for a layout whose pieces only mean anything side by side.
+///
+/// That is also what the roadmap was telling us: tattoohanz did not move the
+/// in-race HUD, and 36 of his 39 replacement layouts are menus -- he used
+/// assets there because menus need per-element control, and his `hud_43` box
+/// mode is the designed answer for this screen. Grouping a whole menu layout
+/// is a separate piece of work; until then the anchor stays where it is
+/// demonstrably right.
+unsafe fn in_race() -> bool {
+	CONSOLE_FRAME != 0 && FRAMES.saturating_sub(CONSOLE_FRAME) < RACE_GRACE
 }
 
 macro_rules! console_detours {
@@ -626,10 +1050,22 @@ const DUMP_EVERY: u32 = 300;
 /// seconds for as long as a cabinet idles is exactly the per-frame logging
 /// `report.rs` exists to prevent.
 pub unsafe fn tick() {
+	if !CONFIG.res_log && !ANCHOR {
+		return;
+	}
+	// A widget that drew anything this frame has a complete extent from the
+	// next frame on, and can be decided about. Before that its union holds
+	// only the quads submitted so far, and a verdict taken from it would move
+	// the first half of a widget and leave the rest behind.
+	FRAMES += 1;
+	for widget in WIDGETS.iter_mut() {
+		if widget.quads > 0 {
+			widget.settled = true;
+		}
+	}
 	if !CONFIG.res_log {
 		return;
 	}
-	FRAMES += 1;
 	if FRAMES % DUMP_EVERY != 0 {
 		return;
 	}
@@ -748,11 +1184,10 @@ unsafe fn dump() {
 		// The roadmap's rule, applied to the whole widget rather than a quad,
 		// and to the union rather than to this period.
 		let decision = SIDE_NAMES[side(widget.min_x, widget.max_x, BAR)];
+		let name = widget_name(widget);
 		platform::log(&format!(
-			"hud: anm {:<7}/{:<5} {:>6} quads  union {:>9.2} ..{:>9.2}  \
+			"hud: {name:<17} {:>6} quads  union {:>9.2} ..{:>9.2}  \
 			 now {:>9.2} ..{:>9.2}  {decision}",
-			widget.key.0,
-			widget.key.1,
 			widget.quads,
 			widget.min_x,
 			widget.max_x,
@@ -788,13 +1223,38 @@ unsafe fn dump() {
 }
 
 pub unsafe fn init() {
-	if !CONFIG.res_log {
+	// `widescreen_anchor` moves widgets, `res_log` only watches them. Either
+	// needs the sprite and entry hooks; only the measurement needs the
+	// console wrappers, which found nothing and are kept for what they say
+	// about the consoles rather than for what they attribute.
+	ANCHOR = CONFIG.widescreen_anchor && CONFIG.widescreen_hud;
+	if CONFIG.widescreen_anchor && !CONFIG.widescreen_hud {
+		platform::log(
+			"hud: widescreen_anchor does nothing while widescreen_hud is off -- \
+			 the distance to move is the margin that one opens up",
+		);
+	}
+	if !CONFIG.res_log && !ANCHOR {
 		return;
 	}
 	BAR = bar(CONFIG.width as f32 / CONFIG.height as f32);
-	platform::log(&format!("hud: the bar is {BAR:.2} units at this render"));
+	platform::log(&format!(
+		"hud: the bar is {BAR:.2} units at this render, {}",
+		if ANCHOR { "anchoring" } else { "measuring only" }
+	));
+	// The console wrappers attribute almost nothing, which is what they were
+	// installed to find out -- but they are also the only thing that says a
+	// race is on screen rather than a menu, so the anchor needs them too.
 	for (index, (symbol, name)) in CONSOLES.iter().enumerate() {
 		ORIGINAL_CONSOLES[index] = res::watch("hud", symbol, DETOURS[index] as *const (), name);
+	}
+	if CONFIG.res_log {
+		ORIGINAL_RACE_DRAW = res::watch(
+			"hud",
+			"_ZN12clRaceThread4drawEv",
+			race_draw as *const (),
+			"clRaceThread::draw",
+		);
 	}
 	ORIGINAL_SPRITE_ANIME = res::watch(
 		"hud",
@@ -808,13 +1268,6 @@ pub unsafe fn init() {
 		sprite_font_draw as *const (),
 		"clSpriteFont::draw (x at +0x20)",
 	);
-	ORIGINAL_RACE_DRAW = res::watch(
-		"hud",
-		"_ZN12clRaceThread4drawEv",
-		race_draw as *const (),
-		"clRaceThread::draw",
-	);
-
 	// The vtables, so a submitted entry can be told apart by its vptr. A class
 	// whose symbol is missing simply never matches, and its entries land under
 	// "(unknown)" rather than being mis-filed as another class.
@@ -917,6 +1370,33 @@ mod tests {
 		// `out` rather than `wide`, and the reason that verdict exists.
 		assert_eq!(side(800.0, 1000.0), SIDE_OUT);
 		assert_eq!(side(-400.0, -200.0), SIDE_OUT);
+	}
+
+	/// A widget with no width has no position, and `0.00 .. 0.00` must not
+	/// read as "left of centre". `anm 4392/60` is a real one, caught being
+	/// moved a bar to the left on the first run of the transform.
+	#[test]
+	fn no_width_is_not_a_position() {
+		let slack = bar(16.0 / 9.0);
+		assert_eq!(side(0.0, 0.0, slack), SIDE_NONE); // anm 4392/60
+		assert_eq!(side(400.0, 400.0, slack), SIDE_NONE);
+		assert_eq!(side(0.0, 0.5, slack), SIDE_NONE);
+		// An empty union, which is what a widget looks like before its first
+		// quad arrives, must not come out as a direction either.
+		assert_eq!(side(f32::INFINITY, f32::NEG_INFINITY, slack), SIDE_NONE);
+		// A unit wide is thin but real, and still has a side.
+		assert_eq!(side(100.0, 101.0, slack), SIDE_LEFT);
+	}
+
+	/// At 4:3 the bar is zero, so the slack derived from it is too, and
+	/// `anm 1432/2` at -30.00..130.00 came out `out` over a soft edge.
+	/// Measured at 1280x960.
+	#[test]
+	fn the_slack_does_not_collapse_at_four_three() {
+		assert_eq!(side(-30.0, 130.0, bar(4.0 / 3.0)), SIDE_LEFT);
+		assert_eq!(side(-30.0, 130.0, bar(16.0 / 9.0)), SIDE_LEFT);
+		// Still outside when it is genuinely outside, at any aspect.
+		assert_eq!(side(-200.0, -100.0, bar(4.0 / 3.0)), SIDE_OUT);
 	}
 
 	/// A widget exactly on the dead zone's edge does not move, and one a

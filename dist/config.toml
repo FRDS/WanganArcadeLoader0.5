@@ -15,6 +15,11 @@ height = 480
 # Keep the 2D layer undistorted when width:height is not 4:3. Does nothing at
 # 4:3. Turn it off to get the old sideways stretch back.
 widescreen_hud = true
+# Push HUD elements back out to the edges they were drawn against, instead of
+# leaving them bunched in the middle 75% of a 16:9 screen. Needs
+# widescreen_hud, and does nothing at 4:3. Off by default: it moves things,
+# and it has been measured against the in-race HUD rather than every screen.
+widescreen_anchor = false
 
 # Wait for the display's refresh before swapping.
 vsync = true
