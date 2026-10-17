@@ -129,7 +129,23 @@ unsafe fn apply(patches: &[Patch], name: &str) -> bool {
 	}
 	for p in patches {
 		platform::write_memory((BASE + p.offset) as *mut (), p.write);
-		platform::log(&format!("gemballa: patched 0x{:08X} -- {}", p.offset, p.what));
+		// Read back. A write that silently does not stick -- a page the
+		// loader cannot make writable, say -- would otherwise look exactly
+		// like a patch that works but is ignored, and those want chasing in
+		// completely different directions.
+		let back = read_image(p.offset, p.write.len());
+		let stuck = back.as_deref() == Some(p.write);
+		platform::log(&format!(
+			"gemballa: {} 0x{:08X} -- {}{}",
+			if stuck { "patched" } else { "WRITE DID NOT STICK at" },
+			p.offset,
+			p.what,
+			if stuck {
+				String::new()
+			} else {
+				format!(", reads back {:02x?}", back.unwrap_or_default())
+			}
+		));
 	}
 	true
 }
@@ -147,6 +163,21 @@ fn models_present() -> bool {
 		.all(|car| std::path::Path::new(&format!("data/car/{car}/car.lua")).is_file())
 }
 
+/// **Diagnostic, kept off.** Writes car 247 into every one of the 32 rival
+/// entries.
+///
+/// Run on hardware on 2026-10-17 and it answered: with all 32 set to the
+/// Gemballa, story chapter 6/7 still showed Shima in the Z33. **Story mode
+/// does not read this table.** So `0x12ED6B0` -- the one car assignment that
+/// differs between the Export and JPN binaries, and the edit the roadmap
+/// describes as putting a story rival back in the Gemballa -- does not do
+/// that, whatever it does do. Left here because it is the cheap question to
+/// ask of any table we think drives something: set the whole thing to one
+/// value and see if the game notices.
+const PROBE_ALL: bool = false;
+const ROSTER: usize = 0x12E_D3E0;
+const ROSTER_LEN: usize = 32;
+
 pub unsafe fn init() {
 	if !CONFIG.gemballa {
 		return;
@@ -156,8 +187,17 @@ pub unsafe fn init() {
 		return;
 	}
 
-	// Masaki first, because it is the half that stands alone.
+	// Shima first, because it is the half that stands alone.
 	apply(&MASAKI, "the story car");
+
+	if PROBE_ALL {
+		for i in 0..ROSTER_LEN {
+			platform::write_memory((BASE + ROSTER + i * 24) as *mut (), &247u32.to_le_bytes());
+		}
+		platform::log(&format!(
+			"gemballa: PROBE -- all {ROSTER_LEN} rival entries set to car 247. 			 If rivals are still their own cars, story mode does not read this table."
+		));
+	}
 
 	if models_present() {
 		apply(&CARS, "the maker unlock");

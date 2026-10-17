@@ -606,7 +606,23 @@ unreliable and the expected bytes as the real identifier, which is what
   `nis_BNR32_Feeling`. The "Masaki" label here was wrong and was believed
   twice before an in-game observation forced the check; `nis_Z33_Shima` is a
   *different* entry, chara 20, identical in both builds, which is what makes
-  the mistake easy to keep making. **He is the only one.** Diffed against a JPN dump on
+  the mistake easy to keep making. **He is the only one.**
+
+  **And it does not affect story mode.** Tested on hardware on 2026-10-17 by
+  setting *all 32* entries of that table to 247 and playing story chapter 6/7:
+  Shima still arrived in the Z33, with the HUD captioning him "Tatsuya Shima
+  / Black Bird" over a Nissan. So the game does not read this table for story
+  rivals, and whatever `0x12ED6B0` governs, it is not the chapter that the
+  Blackbird appears in. The 32 entries pair with a 32-pointer array of "vs
+  <name>" labels at `0x138BFC0` whose index 30 is "vs Tatsuya Shima", so the
+  table is a rival roster for *something* -- just not story mode.
+
+  **Where story mode gets its cars is unknown.** `clSeqStEnemyInformationThread`,
+  `clSeqStEnemyLevelSelectThread`, `seqRaceStory` and `mseqStory` are the
+  machinery; the chapter-to-rival table behind them has not been found, and
+  no second car assignment differs between the two binaries anywhere in the
+  data area. Hooking the enemy-information thread and reading what it is
+  handed is the obvious next instrument. Diffed against a JPN dump on
   2026-10-17 (`H:\wmmt3dxp`, `main` 24,855,892 bytes): of the 32 story
   characters, exactly one car id differs between the builds. Nobody asking
   "does it change Shima's car too?" needs to wonder again — no, and no one
