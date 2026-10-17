@@ -18,6 +18,34 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 /// What everything in the dump was laid out for.
 const ORIGINAL_ASPECT: f32 = 640.0 / 480.0;
 
+/// The width of the 640-space, in screen pixels per unit.
+///
+/// **Not `width / 640` once `widen` has opened the box out**, and getting
+/// that wrong is what put the minimap's art a third larger than the frame it
+/// is drawn inside. `widen` makes the box `640 * factor` units wide, so a
+/// unit is worth proportionally less of the screen; anything that converts a
+/// 640-space measurement into pixels has to go through here rather than
+/// assuming the layer fills the width.
+unsafe fn unit_px(render_aspect: f32) -> f32 {
+	let factor = if CONFIG.widescreen_hud && !is_aspect(render_aspect, ORIGINAL_ASPECT) {
+		render_aspect / ORIGINAL_ASPECT
+	} else {
+		1.0
+	};
+	CONFIG.width as f32 / (640.0 * factor)
+}
+
+/// Where a 640-space x lands on screen, in pixels.
+///
+/// The box runs from `-bar` to `640 + bar`, so a unit sitting at `u` is
+/// `u + bar` units from the left edge -- unless the anchor has already moved
+/// it by a bar, which is exactly what it cancels.
+unsafe fn unit_x_px(u: f32, render_aspect: f32) -> f32 {
+	let px = unit_px(render_aspect);
+	let bar = (CONFIG.width as f32 / px - 640.0) / 2.0;
+	(u + if hud::anchoring() { 0.0 } else { bar }) * px
+}
+
 /// The horizontal range a screen-space orthographic box needs so that a render
 /// at `render_aspect` maps it isotropically, or `None` to leave the box alone.
 ///
@@ -103,7 +131,12 @@ unsafe extern "C" fn lua_getglobal(state: *const c_void, global: *const c_char) 
 	let replaced = match str {
 		"SCREEN_XSIZE" => Some(CONFIG.width as c_double),
 		"SCREEN_YSIZE" => Some(CONFIG.height as c_double),
-		"MINIMAP_DISP_X" => Some((CONFIG.width as c_double * 0.0265625).round()),
+		// 0.0265625 is 17/640: the minimap's authored x in the 640-space.
+		// It has to be converted through the widened box like any other
+		// 640-space measurement, or the art lands where the frame used to be.
+		"MINIMAP_DISP_X" => Some(
+			unit_x_px(17.0, CONFIG.width as f32 / CONFIG.height as f32).round() as c_double,
+		),
 		"MINIMAP_DISP_Y" => Some((CONFIG.height as c_double * 0.2364).round()),
 		_ => None,
 	};
@@ -130,7 +163,10 @@ unsafe extern "C" fn set_viewport(
 	a6: c_float,
 ) -> *const c_void {
 	if width == 88 && height == 82 {
-		let width = CONFIG.width as f32 * 0.1375;
+		// 88 units wide in the 640-space, so it scales with the space and not
+		// with the screen -- at 1280x720 that is 132 pixels, where scaling by
+		// the width gives 176 and overflows the frame by a third.
+		let width = 88.0 * unit_px(CONFIG.width as f32 / CONFIG.height as f32);
 		let height = CONFIG.height as f32 * 0.17;
 		if CONFIG.res_log {
 			log_once(format!(

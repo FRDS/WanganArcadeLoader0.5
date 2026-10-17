@@ -364,7 +364,14 @@ int main(int argc, char **argv)
 
 	((void *(*)(void *, int, int, int, int, float, float))impl(
 		"_ZN3Gap3Gfx19igAGLEVisualContext11setViewportEiiiiff"))(NULL, 0, 0, 88, 82, 1.5f, 0.0f);
-	CHECK(viewport_w == 176 && viewport_h == 122, "minimap viewport scaled to 1280x720");
+	/* 132, not 176. The minimap is 88 units wide in the 640-space, so it
+	   scales with that space and not with the screen: `widen` makes the box
+	   853.33 units wide at 16:9, a unit is worth 1.5 pixels rather than 2,
+	   and 88 of them are 132. Scaling by the width drew the art a third
+	   larger than the 2D frame it sits inside, which is visible on hardware
+	   as the route line overflowing its box. At 4:3 the two agree, so the
+	   configuration proven on three machines is unaffected. */
+	CHECK(viewport_w == 132 && viewport_h == 122, "minimap viewport follows the 640-space, not the screen");
 
 	((void (*)(void *, float, float, float, float, float))impl(
 		"_ZN3Gap4Math11igMatrix44f32makePerspectiveProjectionRadiansEfffff"))(
