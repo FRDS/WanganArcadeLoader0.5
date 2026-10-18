@@ -137,6 +137,16 @@ unsafe extern "C" fn wal_nickname_stack(
 	} else {
 		CStr::from_ptr(name).to_string_lossy().into_owned()
 	};
+	// Traffic eats the budget. `report.rs` goes quiet after 64 distinct
+	// messages -- which is what stops a per-frame log reaching 70 MB -- and a
+	// race spawns a steady stream of colour variants (`mit_CT9A9_mr-white_perl`
+	// and friends) that would exhaust it before the rival ever appears. The
+	// cars worth naming are the character cars, which start at 240; the
+	// player's own car and all traffic sit below it.
+	const CHARACTER_CAR: c_int = 240;
+	if model_id < CHARACTER_CAR {
+		return name;
+	}
 	let who = elfsym::describe(caller as u32)
 		.unwrap_or_else(|| format!("0x{:08x}", caller as usize));
 	REPORTED.say(format!("car: model id {model_id} is {text}, asked for by {who}"));

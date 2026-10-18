@@ -186,6 +186,65 @@ const PROBE_ALL: bool = false;
 /// matters is one run, where reasoning about which looks like story data has
 /// now been wrong three times.
 const PROBE_277: bool = false;
+
+/// **Shima's Blackbird.** The 35 `.data` sites where the Export build holds
+/// model id 277 and a JPN dump holds 248, at the same offset within the
+/// section.
+///
+/// Both ids are runtime-confirmed, which matters because every static reading
+/// of the car table in this file's history was off by one in one direction or
+/// the other: `car_log` reports **277 is `nis_Z33_Shima`** and **248 is
+/// `gem_964_38RS_Shima2nd`**. So the Export build swapped Shima's Blackbird
+/// for a Z33 in thirty-five places, and writing the JPN value back restores
+/// it -- confirmed on hardware in story Episode 7, where the rival loaded
+/// `gem_964_38RS_Shima2nd` with these applied.
+///
+/// This is *not* what `0x12ED6B0` does. That edit -- the one the roadmap
+/// describes as putting a story rival in the Gemballa -- is in a roster
+/// story mode never reads, proved by setting all 32 of its entries to one car
+/// and watching nothing change. Finding this took ruling out the roster,
+/// every `.rodata` dword, the three `nsCarParts` id-space converters and the
+/// whole call chain down to `clCarConstructParam+0x08`; `.data` was the one
+/// section never probed, and the answer was sitting in it.
+const STORY_CAR: bool = true;
+const STORY_SHIMA: [usize; 35] = [
+	0x17035D8,
+	0x1703670,
+	0x17036AC,
+	0x1703B20,
+	0x1703B38,
+	0x1703B58,
+	0x1703B94,
+	0x1703DD0,
+	0x1703DE4,
+	0x1703E04,
+	0x1703E40,
+	0x1703F28,
+	0x1703F40,
+	0x1703F60,
+	0x1703F9C,
+	0x170409C,
+	0x17040F8,
+	0x17041D8,
+	0x17041EC,
+	0x170420C,
+	0x1704248,
+	0x17042C0,
+	0x170A548,
+	0x170A55C,
+	0x170A560,
+	0x170A57C,
+	0x170A580,
+	0x170A5B8,
+	0x170A5BC,
+	0x170A6A0,
+	0x170A6BC,
+	0x170A6DC,
+	0x170A718,
+	0x170A754,
+	0x170A790,
+];
+
 const RODATA_277: [usize; 13] = [
 	0x012A_D8F8,
 	0x012E_2168,
@@ -215,6 +274,20 @@ pub unsafe fn init() {
 
 	// Shima first, because it is the half that stands alone.
 	apply(&MASAKI, "the story car");
+
+	if STORY_CAR {
+		let mut done = 0;
+		for off in STORY_SHIMA {
+			if read_image(off, 4).as_deref() == Some(&277u32.to_le_bytes()) {
+				platform::write_memory((BASE + off) as *mut (), &248u32.to_le_bytes());
+				done += 1;
+			}
+		}
+		platform::log(&format!(
+			"gemballa: Shima drives the Blackbird again -- {done} of {} sites 			 restored from 277 (nis_Z33_Shima) to 248 (gem_964_38RS_Shima2nd)",
+			STORY_SHIMA.len()
+		));
+	}
 
 	if PROBE_277 {
 		let mut done = 0;
