@@ -619,10 +619,30 @@ unreliable and the expected bytes as the real identifier, which is what
 
   **Where story mode gets its cars is unknown.** `clSeqStEnemyInformationThread`,
   `clSeqStEnemyLevelSelectThread`, `seqRaceStory` and `mseqStory` are the
-  machinery; the chapter-to-rival table behind them has not been found, and
-  no second car assignment differs between the two binaries anywhere in the
-  data area. Hooking the enemy-information thread and reading what it is
-  handed is the obvious next instrument. Diffed against a JPN dump on
+  machinery.
+
+  **Found: the story rival's car is 35 dwords in `.data`.** The Export build
+  holds model id 277 (`nis_Z33_Shima`) where a JPN dump holds 248
+  (`gem_964_38RS_Shima2nd`), at the same offsets within the section, and
+  restoring the JPN value puts the Blackbird back -- confirmed in Episode 7
+  on hardware. `src/gemballa.rs` does this under `gemballa`, and the offsets
+  are listed there.
+
+  Both ids come from `car_log` at run time, not from the car table. **Every
+  static walk of that table was off by one**, in one direction or the other,
+  and twice produced a confident wrong answer -- including "Masaki" for an
+  entry that is Shima's. Treat the table as something to explain a runtime
+  observation with, never as the source of one.
+
+  What ruled the rest out, each by experiment: setting all 32 roster entries
+  to one car (nothing changed), setting every `.rodata` dword holding 277 to
+  another value (nothing changed, and it broke the id-to-name map at
+  `0x013DCD24`, which is how that map was identified), and hooking all three
+  `nsCarParts` id-space converters (never called, so the id is stored
+  directly). The chain is `LuaNickNameGetFromModelID` <- `constructBody` <-
+  `loadBody` <- `callBodyConstructParam`, with the id at
+  `clCarConstructParam+0x08`; the player's car takes the identical path, so
+  none of those frames tells a rival apart. Diffed against a JPN dump on
   2026-10-17 (`H:\wmmt3dxp`, `main` 24,855,892 bytes): of the 32 story
   characters, exactly one car id differs between the builds. Nobody asking
   "does it change Shima's car too?" needs to wonder again — no, and no one
