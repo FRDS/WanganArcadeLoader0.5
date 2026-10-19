@@ -696,14 +696,14 @@ const ROW_TITLE: usize = 0x30;
 /// asked for frame 260: out of range, nothing drawn, for every set including
 /// the game's own three. Loading the full plate is the other half of the
 /// patch, and it is why forcing the unlock count alone drew nothing.
+/// Frame `0x104 + set` is the resting display once the row is unlocked, and
+/// `menu_g_cardcheck_8_sound_sel.anm` holds 263 frames -- so the three sets
+/// the game ships rest on 260, 261 and 262 and there is nothing past them.
+/// Setting those frames here is not how the row is driven, though; see
+/// `borrow_set`.
 const SOUND_PLATE: c_int = 0xa0;
 const PLATE_MODE: c_int = 6;
-const FRAME_MODE: c_int = 1;
-/// Frame `0x104 + set` is the resting display once the row is unlocked.
-/// `menu_g_cardcheck_8_sound_sel.anm` holds 263 frames, so the three the game
-/// ships land on 260, 261 and 262 and there is nothing past them.
-const STATIC_FRAME: c_int = 0x104;
-/// So a custom set borrows the first one, whose artwork `LOGO_DESC` replaces.
+/// The set a custom one borrows, and whose artwork `LOGO_DESC` replaces.
 const BORROWED_SET: c_int = 0;
 
 /// One verified in-memory edit.
@@ -834,7 +834,6 @@ unsafe fn aim_logo(set: i32) {
 	));
 }
 
-static mut SET_ANIME: *const () = std::ptr::null();
 static mut LOAD_ANIME: *const () = std::ptr::null();
 /// The row value the screen last showed, so the choice is written out once
 /// per change rather than once per frame.
@@ -869,25 +868,17 @@ unsafe fn row_changed(this: *mut c_void) {
 	SHOWN_SET = value;
 	aim_logo(value);
 
-	// Draw the row ourselves, every time and for every set -- not just for
-	// the ones the game's dispatch does not know about. The game picks the
-	// plate from the unlock count before the patched value exists, so left
-	// alone it asks the locked plate for a frame that is not in it and the
-	// row comes out blank whatever is selected.
+	// Make sure the row is holding the full plate. The game picks which one
+	// from the unlock count before the patched value exists, so left alone it
+	// keeps the locked plate and every frame the row asks for is out of range
+	// -- which is a blank row whatever is selected, the game's own three sets
+	// included. Loading it once sticks.
 	let sprite = (this as *const u8)
 		.add(ROW_SPRITE)
 		.cast::<*mut c_void>()
 		.read();
-	if !sprite.is_null() && !SET_ANIME.is_null() && !LOAD_ANIME.is_null() {
+	if !sprite.is_null() && !LOAD_ANIME.is_null() {
 		call_game::<_, ()>(LOAD_ANIME, (sprite, SOUND_PLATE, PLATE_MODE, 0, 0, 1));
-		// A custom set has no frame of its own, so it borrows the first and
-		// `aim_logo` has repointed what that frame draws.
-		let frame = if (value as usize) < MENU_SETS {
-			value
-		} else {
-			BORROWED_SET
-		};
-		call_game::<_, ()>(SET_ANIME, (sprite, FRAME_MODE, STATIC_FRAME + frame, 1, 1));
 	}
 
 	if ROW_SHOWN != value {
@@ -925,13 +916,51 @@ fn remember(name: &str) {
 static mut ORIGINAL_AN_RESET: *const () = std::ptr::null();
 static mut ORIGINAL_INIT_ANIME: *const () = std::ptr::null();
 
+/// Shows the game a set it was built to draw, for the length of its own call.
+///
+/// Setting the frame ourselves afterwards does not work, and the reason is
+/// worth keeping: with the cursor on the row, `an_reset` starts a **five-frame
+/// transition** (`mode 4`, `count 5`) whose start frame it picks from the
+/// direction of travel and the destination -- `cmp eax,1`, `cmp eax,2`, and
+/// nothing at all for a set past those. That animation then keeps advancing
+/// on the frames after, so a static frame written once is overwritten a
+/// moment later and the row sits mid-slide with nothing highlighted.
+///
+/// So rather than fight the animation, the value is clamped to a set the
+/// game understands while it draws, and put back immediately after. Every
+/// path -- the resting frame, the transition, the direction test against the
+/// previous value at `+0x54` -- then works as written, and `aim_logo` has
+/// already pointed the borrowed set's artwork at the pack.
+unsafe fn borrow_set(this: *mut c_void) -> Option<c_int> {
+	if this.is_null() {
+		return None;
+	}
+	let slot = (this as *mut u8).add(ROW_VALUE).cast::<c_int>();
+	let real = slot.read();
+	if (real as usize) < MENU_SETS {
+		return None;
+	}
+	slot.write(BORROWED_SET);
+	Some(real)
+}
+
+unsafe fn give_back(this: *mut c_void, real: Option<c_int>) {
+	if let Some(real) = real {
+		(this as *mut u8).add(ROW_VALUE).cast::<c_int>().write(real);
+	}
+}
+
 unsafe extern "C" fn an_reset(this: *mut c_void) {
+	let real = borrow_set(this);
 	call_game::<_, ()>(ORIGINAL_AN_RESET, (this,));
+	give_back(this, real);
 	row_changed(this);
 }
 
 unsafe extern "C" fn init_anime(this: *mut c_void) {
+	let real = borrow_set(this);
 	call_game::<_, ()>(ORIGINAL_INIT_ANIME, (this,));
+	give_back(this, real);
 	row_changed(this);
 }
 
@@ -965,9 +994,8 @@ unsafe fn install_selector() {
 		.unwrap_or([0; LOGO_BYTES]);
 	LOGO_SAVED = LOGO_ORIGINAL.iter().any(|byte| *byte != 0);
 
-	SET_ANIME = hook::get_symbol("_ZN13clSpriteAnime8setAnimeE3ANMiii") as *const ();
 	LOAD_ANIME = hook::get_symbol("_ZN13clSpriteAnime8setAnimeEi3ANMiii") as *const ();
-	if SET_ANIME.is_null() || LOAD_ANIME.is_null() {
+	if LOAD_ANIME.is_null() {
 		platform::log("bgm: clSpriteAnime::setAnime is missing, so the BGM row will stay blank");
 	}
 	ORIGINAL_AN_RESET = hook::hook_symbol("_ZN14clSeqCardDisp98an_resetEv", an_reset as *const ());
@@ -1258,21 +1286,17 @@ mod tests {
 		assert_eq!(LOGO_BYTES, 0x2c);
 	}
 
-	/// The three sets the game ships rest on frames 260, 261 and 262 of a
-	/// 263-frame plate, so a custom set has to borrow one rather than index
-	/// past the end -- which is what drawing nothing looked like.
+	/// A custom set is shown to the screen as one of the three it was built
+	/// to draw. If the borrowed one were not among them, every path -- the
+	/// resting frame, the five-frame transition, the direction test -- would
+	/// be back to indexing past the end of the plate, which is what a blank
+	/// row looked like.
 	#[test]
-	fn a_custom_set_borrows_a_frame_that_exists() {
-		const FRAMES_IN_THE_PLATE: c_int = 263;
-		for set in 0..MENU_SETS as c_int {
-			assert!(STATIC_FRAME + set < FRAMES_IN_THE_PLATE);
-		}
-		assert_eq!(
-			STATIC_FRAME + MENU_SETS as c_int,
-			FRAMES_IN_THE_PLATE,
-			"the first set with no frame of its own is the one past the end"
-		);
-		assert!(STATIC_FRAME + BORROWED_SET < FRAMES_IN_THE_PLATE);
+	fn the_borrowed_set_is_one_the_screen_can_draw() {
+		assert!(BORROWED_SET >= 0 && (BORROWED_SET as usize) < MENU_SETS);
+		// And the plate has a resting frame for each of them: 0x104 + set,
+		// over 263 frames, so 260, 261 and 262 with nothing past.
+		assert_eq!(0x104 + MENU_SETS, 263);
 	}
 
 	/// What the engine samples with comes out of this, so anything that is
