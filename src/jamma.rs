@@ -8,6 +8,17 @@ const GEAR_LEFT: u32 = 1;
 const GEAR_RIGHT: u32 = 2;
 const GEAR_UP: u32 = 4;
 const GEAR_DOWN: u32 = 8;
+
+/// The shifter in neutral, which is where a cabinet's lever sits when nobody
+/// is holding it.
+const NEUTRAL: u8 = 0;
+
+/// The emulated H-pattern position for sequential gear `index`.
+///
+/// **Every gear holds either UP or DOWN**, because that is how the real lever
+/// works: 1/3/5 are the forward row and 2/4/6 the back one, and the position
+/// switches stay closed for as long as the lever is in the gate. Only neutral
+/// holds nothing. See `handle_inputs` for why that matters outside a race.
 fn set_gear_bits(index: u8) -> u32 {
 	match index {
 		0 => 0,
@@ -87,6 +98,24 @@ unsafe extern "C" fn handle_inputs(data: *mut u32) {
 	} else if sdl.is_tapped(&keyconfig.gear_sixth) {
 		GEAR_INDEX = 6;
 	}
+	// The test and service buttons put the lever back in neutral.
+	//
+	// The test menu has no cursor switches of its own: it navigates on the
+	// shifter, and `clInputDevice`'s constructor sets the auto-repeat mask at
+	// `+0x1c` to 0xF -- exactly these four bits and nothing else. So
+	// `clInputDevice::update()` re-fires a *held* shifter direction every 8
+	// frames after a 30-frame delay, which is auto-repeat working as designed
+	// on a real cabinet, where the operator has let go of the lever.
+	//
+	// Our lever does not spring back. `GEAR_INDEX` persists across the whole
+	// run, so entering the menu still in gear fed the cursor a held direction
+	// for ever -- up out of 1st, 3rd or 5th, down out of 2nd, 4th or 6th --
+	// and nothing in the menu could clear it, since the gear bindings that
+	// reset `GEAR_INDEX` are the arrow keys the cursor was already running
+	// away from.
+	if sdl.is_tapped(&keyconfig.test) || sdl.is_tapped(&keyconfig.service) {
+		GEAR_INDEX = NEUTRAL;
+	}
 	bits |= set_gear_bits(GEAR_INDEX);
 	if sdl.is_down(&keyconfig.gear_up) > 0.0 {
 		GEAR_INDEX = 0;
@@ -156,4 +185,40 @@ pub unsafe fn init() {
 
 	hook::hook_symbol("n2JvioTxVsync", adachi as *const ());
 	hook::hook_symbol("n2JvioAckTxVsync", adachi as *const ());
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	/// The reason `handle_inputs` has to force neutral before the test menu
+	/// sees the bits: there is no gear whose position the menu reads as "no
+	/// direction", so any gear at all is a held cursor key.
+	#[test]
+	fn every_gear_but_neutral_holds_a_direction() {
+		assert_eq!(set_gear_bits(NEUTRAL) & (GEAR_UP | GEAR_DOWN), 0);
+		for gear in 1..=6 {
+			let held = set_gear_bits(gear) & (GEAR_UP | GEAR_DOWN);
+			assert_ne!(held, 0, "gear {gear} holds neither up nor down");
+		}
+		// The forward row is up, the back row is down.
+		for gear in [1, 3, 5] {
+			assert_eq!(set_gear_bits(gear) & GEAR_UP, GEAR_UP);
+		}
+		for gear in [2, 4, 6] {
+			assert_eq!(set_gear_bits(gear) & GEAR_DOWN, GEAR_DOWN);
+		}
+	}
+
+	/// `clInputDevice`'s constructor stores 0xF as the auto-repeat mask, so
+	/// the repeating bits are the shifter's and only the shifter's. Anything
+	/// else we hold -- gas, brake, view, intrude -- cannot run a cursor away.
+	#[test]
+	fn only_the_shifter_bits_are_the_ones_that_repeat() {
+		const REPEAT_MASK: u32 = 0xF;
+		assert_eq!(GEAR_LEFT | GEAR_RIGHT | GEAR_UP | GEAR_DOWN, REPEAT_MASK);
+		for gear in 0..=6 {
+			assert_eq!(set_gear_bits(gear) & !REPEAT_MASK, 0);
+		}
+	}
 }

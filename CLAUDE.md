@@ -325,6 +325,20 @@ come from the OS, not from here — there is no per-input tracing any more.
   run. Use `report.rs` — a `static Reported` per subsystem, which
   stops after 64 distinct messages, because deduplicating by text alone never
   repeats for a line carrying an address or a size and so never stops.
+- **The test menu navigates on the gear shifter, and auto-repeats it.** There
+  are no cursor switches in the JAMMA map at all — the switch table at
+  `0x93cfc40` pairs raw bits with exactly ten game bits (shifter × 4, gas,
+  brake, view, intrude, test, service) — so the menu reads the shifter's
+  position. `clInputDevice`'s constructor stores `0xF` as the auto-repeat mask
+  at `+0x1c`, which is those four shifter bits and nothing else, and
+  `clInputDevice::update()` re-fires a *held* masked bit every 8 frames after
+  a 30-frame delay (`+0x18`), on top of the usual edge trigger
+  (`trig = now & ~old` at `+0x10`, copied to `+0x14`). A real lever springs
+  back to neutral when the operator lets go; ours does not, so **anything that
+  leaves a shifter bit asserted gives the menu a cursor key held down for
+  ever**. `jamma.rs` forces neutral when test or service is tapped. Note that
+  no other stuck bit can do this: gas, brake, view and intrude are outside the
+  repeat mask, so they read as one press and stop.
 - **Frame rate is game speed.** The engine advances one simulation step per
   frame drawn, so anything that changes the frame rate changes how fast the
   game plays — observed directly: holding the rate below 60 made the game run
