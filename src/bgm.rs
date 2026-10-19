@@ -663,7 +663,12 @@ const WRAP_DOWN: usize = 0x087E_FEDF;
 /// which is the frame a custom set borrows. Pointing the pre-race logo's
 /// descriptor here instead, as this first did, could never have worked: that
 /// one is reached through `igImage::load`, which this screen never calls.
-const LOGO_DESC: usize = 0x0959_60EC;
+/// All three states of it. Which one a given frame draws is in the `.anm`,
+/// which has not been decoded -- repointing only `_1_3` changed nothing on
+/// screen, so the frame uses one of the others. Repointing the set as a whole
+/// sidesteps having to know, and is right either way: a custom set always
+/// borrows this slot, so every state of it should be the pack's.
+const LOGO_DESCS: [usize; 3] = [0x0959_6094, 0x0959_60C0, 0x0959_60EC];
 const LOGO_WIDTH: usize = 0x10;
 const LOGO_HEIGHT: usize = 0x14;
 const LOGO_WIDTH2: usize = 0x20;
@@ -678,6 +683,9 @@ const ROW_SPRITE: usize = 0x24;
 /// -- which nothing here writes, so a blank title means the row was never
 /// drawn rather than that the value was wrong.
 const CURSOR_ROW: usize = 0x40;
+/// The value the row was showing last time, which the screen compares against
+/// the current one to decide whether to travel between sets.
+const ROW_SETTLED: usize = 0x54;
 const UNLOCK_COUNT: usize = 0x68;
 const ROW_LIMIT: usize = 0x60;
 const ROW_TITLE: usize = 0x30;
@@ -801,8 +809,8 @@ fn png_size_of(bytes: &[u8]) -> Option<(u32, u32)> {
 fn png_size(path: &CStr) -> Option<(u32, u32)> {
 	png_size_of(&std::fs::read(path.to_str().ok()?).ok()?)
 }
-/// The descriptor as it shipped, so a native set gets its own logo back.
-static mut LOGO_ORIGINAL: [u8; LOGO_BYTES] = [0; LOGO_BYTES];
+/// The descriptors as they shipped, so a native set gets its own logo back.
+static mut LOGO_ORIGINAL: [[u8; LOGO_BYTES]; 3] = [[0; LOGO_BYTES]; 3];
 static mut LOGO_SAVED: bool = false;
 /// Which set the descriptor points at, so it is only rewritten on a change.
 static mut LOGO_SET: i32 = -1;
@@ -823,22 +831,28 @@ unsafe fn aim_logo(set: i32) {
 		return;
 	}
 	LOGO_SET = set;
-	let Some(image) = SETS.get(set as usize).and_then(|set| set.image.as_ref()) else {
-		platform::write_memory(LOGO_DESC as *mut (), &LOGO_ORIGINAL);
+	let image = SETS.get(set as usize).and_then(|set| set.image.as_ref());
+	let Some(image) = image else {
+		for (desc, original) in LOGO_DESCS.iter().zip(LOGO_ORIGINAL.iter()) {
+			platform::write_memory(*desc as *mut (), original);
+		}
 		return;
 	};
 	let pointer = image.as_ptr() as usize as u32;
-	platform::write_memory(LOGO_DESC as *mut (), &pointer.to_le_bytes());
-	if let Some((width, height)) = png_size(image) {
-		for offset in [LOGO_WIDTH, LOGO_WIDTH2] {
-			platform::write_memory((LOGO_DESC + offset) as *mut (), &(width as f32).to_le_bytes());
-		}
-		for offset in [LOGO_HEIGHT, LOGO_HEIGHT2] {
-			platform::write_memory((LOGO_DESC + offset) as *mut (), &(height as f32).to_le_bytes());
+	let size = png_size(image);
+	for desc in LOGO_DESCS {
+		platform::write_memory(desc as *mut (), &pointer.to_le_bytes());
+		if let Some((width, height)) = size {
+			for offset in [LOGO_WIDTH, LOGO_WIDTH2] {
+				platform::write_memory((desc + offset) as *mut (), &(width as f32).to_le_bytes());
+			}
+			for offset in [LOGO_HEIGHT, LOGO_HEIGHT2] {
+				platform::write_memory((desc + offset) as *mut (), &(height as f32).to_le_bytes());
+			}
 		}
 	}
-	REPORTED.say(format!(
-		"bgm: the card screen's sound plate now draws {}",
+	platform::log(&format!(
+		"bgm: the card screen's first sound plate now draws {}",
 		image.to_string_lossy()
 	));
 }
@@ -960,13 +974,29 @@ unsafe fn borrow_set(this: *mut c_void) -> Option<c_int> {
 		return None;
 	}
 	slot.write(BORROWED_SET);
+	REPORTED.say(format!(
+		"bgm: card row 1 drawn as set {BORROWED_SET} instead of {real}, cursor on row {}",
+		(this as *const u8).add(CURSOR_ROW).cast::<c_int>().read()
+	));
 	Some(real)
 }
 
 unsafe fn give_back(this: *mut c_void, real: Option<c_int>) {
-	if let Some(real) = real {
-		(this as *mut u8).add(ROW_VALUE).cast::<c_int>().write(real);
-	}
+	let Some(real) = real else {
+		return;
+	};
+	(this as *mut u8).add(ROW_VALUE).cast::<c_int>().write(real);
+	// And tell it the row has settled there.
+	//
+	// The screen keeps the value it last drew at `+0x54` and compares it
+	// against the current one -- `cmp [ecx+0x54], eax` -- to decide which way
+	// to travel. Drawing under the clamp makes it record the borrowed set, so
+	// putting the real one back on its own leaves the two permanently
+	// disagreeing: it sets off towards a set it has no frames for and snaps
+	// back, over and over, with nobody touching the wheel. Writing both keeps
+	// the screen's own invariant, which is that the two match once a move has
+	// finished.
+	(this as *mut u8).add(ROW_SETTLED).cast::<c_int>().write(real);
 }
 
 unsafe extern "C" fn an_reset(this: *mut c_void) {
@@ -1008,10 +1038,14 @@ unsafe fn install_selector() {
 		"bgm: the card screen's BGM row now scrolls {sets} sets, wrapping at both ends"
 	));
 
-	LOGO_ORIGINAL = std::slice::from_raw_parts(LOGO_DESC as *const u8, LOGO_BYTES)
-		.try_into()
-		.unwrap_or([0; LOGO_BYTES]);
-	LOGO_SAVED = LOGO_ORIGINAL.iter().any(|byte| *byte != 0);
+	for (slot, desc) in LOGO_ORIGINAL.iter_mut().zip(LOGO_DESCS) {
+		*slot = std::slice::from_raw_parts(desc as *const u8, LOGO_BYTES)
+			.try_into()
+			.unwrap_or([0; LOGO_BYTES]);
+	}
+	LOGO_SAVED = LOGO_ORIGINAL
+		.iter()
+		.all(|entry| entry.iter().any(|byte| *byte != 0));
 
 	// Before anything loads the plate, for the reason in `aim_logo`.
 	if let Some(chosen) = chosen_set() {
@@ -1307,6 +1341,10 @@ mod tests {
 			assert!(offset + 4 <= LOGO_BYTES, "{offset:#x} runs off the entry");
 		}
 		assert_eq!(LOGO_BYTES, 0x2c);
+		// The three states of one slot, adjacent entries in the table.
+		for pair in LOGO_DESCS.windows(2) {
+			assert_eq!(pair[1] - pair[0], LOGO_BYTES, "the entries are not adjacent");
+		}
 	}
 
 	/// A custom set is shown to the screen as one of the three it was built
