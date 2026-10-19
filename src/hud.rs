@@ -880,7 +880,9 @@ unsafe fn shift(owner: usize) -> f32 {
 	};
 	// Said once per widget, so a run that reaches no race still shows in the
 	// log whether the transform fired at all and on what.
-	if by != 0.0 && !widget.announced {
+	// Behind `res_log`: with the anchor on and nothing being diagnosed, a run
+	// should be quiet. This is a measurement of what moved, not news.
+	if CONFIG.res_log && by != 0.0 && !widget.announced {
 		WIDGETS[owner].announced = true;
 		let name = widget_name(&widget);
 		platform::log(&format!(
@@ -1222,6 +1224,23 @@ unsafe fn dump() {
 	}
 }
 
+/// Like `res::watch`, but quiet about success unless something is being
+/// diagnosed.
+///
+/// `widescreen_anchor` is a feature, not an investigation: with it on and
+/// `res_log` off, a boot should not print twenty lines about hooks that
+/// installed exactly as expected. A hook that *fails* is always worth saying,
+/// because every verdict downstream of it silently changes.
+unsafe fn watch(symbol: &str, func: *const (), what: &str) -> *const () {
+	let original = hook::hook_symbol(symbol, func);
+	if original.is_null() {
+		platform::log(&format!("hud: cannot watch {what}, {symbol} is missing"));
+	} else if CONFIG.res_log {
+		platform::log(&format!("hud: watching {what}"));
+	}
+	original
+}
+
 pub unsafe fn init() {
 	// `widescreen_anchor` moves widgets, `res_log` only watches them. Either
 	// needs the sprite and entry hooks; only the measurement needs the
@@ -1246,25 +1265,22 @@ pub unsafe fn init() {
 	// installed to find out -- but they are also the only thing that says a
 	// race is on screen rather than a menu, so the anchor needs them too.
 	for (index, (symbol, name)) in CONSOLES.iter().enumerate() {
-		ORIGINAL_CONSOLES[index] = res::watch("hud", symbol, DETOURS[index] as *const (), name);
+		ORIGINAL_CONSOLES[index] = watch(symbol, DETOURS[index] as *const (), name);
 	}
 	if CONFIG.res_log {
-		ORIGINAL_RACE_DRAW = res::watch(
-			"hud",
+		ORIGINAL_RACE_DRAW = watch(
 			"_ZN12clRaceThread4drawEv",
 			race_draw as *const (),
 			"clRaceThread::draw",
 		);
 	}
-	ORIGINAL_SPRITE_ANIME = res::watch(
-		"hud",
-		"_ZN13clSpriteAnime4drawEv",
+	ORIGINAL_SPRITE_ANIME = watch(
+				"_ZN13clSpriteAnime4drawEv",
 		sprite_anime_draw as *const (),
 		"clSpriteAnime::draw (x at +0x4C)",
 	);
-	ORIGINAL_SPRITE_FONT = res::watch(
-		"hud",
-		"_ZN12clSpriteFont4drawEv",
+	ORIGINAL_SPRITE_FONT = watch(
+				"_ZN12clSpriteFont4drawEv",
 		sprite_font_draw as *const (),
 		"clSpriteFont::draw (x at +0x20)",
 	);
@@ -1281,20 +1297,20 @@ pub unsafe fn init() {
 		ENTRY_VPTRS[index] = (vtable as *const u8).add(8) as *const ();
 		found += 1;
 	}
-	platform::log(&format!(
-		"hud: {found} of {} entry vtables resolved",
-		ENTRY_CLASSES.len()
-	));
+	if CONFIG.res_log {
+		platform::log(&format!(
+			"hud: {found} of {} entry vtables resolved",
+			ENTRY_CLASSES.len()
+		));
+	}
 
-	ORIGINAL_ENTRY = res::watch(
-		"hud",
-		"_ZN15clSpriteManager5entryER17clSpriteRootEntry",
+	ORIGINAL_ENTRY = watch(
+				"_ZN15clSpriteManager5entryER17clSpriteRootEntry",
 		sprite_entry as *const (),
 		"clSpriteManager::entry",
 	);
-	ORIGINAL_ENTRY_AFTER = res::watch(
-		"hud",
-		"_ZN15clSpriteManager10entryAfterER17clSpriteRootEntry",
+	ORIGINAL_ENTRY_AFTER = watch(
+				"_ZN15clSpriteManager10entryAfterER17clSpriteRootEntry",
 		sprite_entry_after as *const (),
 		"clSpriteManager::entryAfter",
 	);
