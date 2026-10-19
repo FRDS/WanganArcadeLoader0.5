@@ -20,8 +20,8 @@ LINE's plugin.
 | P3 input (keyboard, pads, wheels) | keyboard and pad confirmed; wheels/pedals still untested |
 | P4 custom resolution + file/TTY redirects | done; resolution proven on hardware at 1440×1080 windowed and borderless, `file_redirect` and `ignore_custom_ioctls` both on Windows now |
 | Widescreen placement (`widescreen_anchor`) | in-race HUD done and confirmed on hardware; menus and full-width art deliberately excluded |
-| P5 custom BGM | not started |
-| P6 Gemballa unlock | not started, fully researched below |
+| P5 custom BGM | **done and confirmed on hardware** -- packs load, play, persist; the card screen's selector has open cosmetic faults, below |
+| P6 Gemballa unlock | **done and confirmed on hardware**, including Shima's Blackbird |
 | P7 network / localhost split-screen | not started |
 
 Proven on hardware (Export 3DX+ dump): boots through LINE with 47/47 hooks
@@ -571,153 +571,119 @@ One gap left: `fopen64` refuses to hook (MinHook declines the stub at
 `/tmp/...` to `./tmp/...` itself in `fixPathIfNeeded`, so don't add that
 rewrite again.
 
-### P5 — custom BGM (built in, from `vixen256/audio_3dxp`, GPLv3)
+### P5 — custom BGM (`src/bgm.rs`, from `vixen256/audio_3dxp`, GPLv3)
 
-~800 lines of Rust, hooks ~15 game symbols plus a few version-gated absolute
-NOPs; reads `plugins/audio.toml` and `plugins/bgms/*`. Port into `src/bgm.rs`
-behind a config flag, keep its file layout so existing packs work, and verify
-expected bytes before writing the NOPs. Credit vixen256.
+**Done and confirmed on hardware**, behind `custom_bgm`. Three Maximum Tune
+soundtrack packs (4, 5 and 6 -- 17, 16 and 23 songs) load, their names show
+in the pre-race song picker, they play, and the choice persists. What follows
+is only what the port does differently and what is still open; the table
+layouts are in the research section above.
 
-**Every symbol it needs is present in our Export dump**, checked one by one.
-The two `clV363CardData` and two `clV337Card` names miss, but those are the
-3DX and WM3 card classes and this build is V386, so the version branch that
-wants them is never taken here. One name is not in `main` at all --
-`_ZNSbIwSt11char_traitsIwESaIwEEC1EPKwRKS1_`, the `std::wstring(wchar_t
-const*, allocator const&)` constructor -- and that is fine: it lives in
-`libso/libstdc++.so.6` as a weak symbol and resolves at run time through
-`dlsym` on Linux and LINE's `DlSym` on Windows, which is also how the game's
-own call to it at `0x8541339` is bound.
+**Confirmed working on hardware:** pack discovery from `plugins/bgms/*`,
+song titles rendering in the pre-race picker, playback from a pack, the
+pre-race logo substitution, the choice persisting to `plugins/audio.toml`
+and surviving a restart, and the row in the card screen scrolling all six
+sets and wrapping at both ends.
 
-**The dump carries the whole BGM catalogue in two tables, so nothing needs
-hardcoding.** This is the thing worth knowing before porting: audio_3dxp
-hardcodes three sets of songs with their paths and titles, and all of it can
-be read out of the binary instead, correct for this build by construction.
+**Three things the port had to get right that are easy to get wrong again:**
 
-- **`0x9321260` is `nsAudio`'s BGM table: 111 entries of 12 bytes**, indexed
-  by `emBgmType` 0..110. `+0x00` `const char*` WAV path, `+0x04` `float`
-  relative volume (2.5 for every music entry -- which is all `setRelativeVolume`
-  forces, so that hook is just the table's own value), `+0x08`
-  `const wchar_t*` title *already in the game's "N Name" display form*, e.g.
-  `6 Inexhaustible Energy`. Entry 0 is `data/sound/bgm/maxi1/wm2_05.wav`,
-  which is the path audio_3dxp keys its substitution on; 109 is
-  `/tmp/sys_04.wav` and 110 `data/sound/bgm/test/test_attract.wav`, the
-  `0x6E` that `get_bgm_index` special-cases.
-- **`0x93e3560` is the menu's `int[3][25]`**, read as `table[set * 25 + index]`
-  by `nsMenuCheck::getBgmSelectName`. Slot 0 of each row is 110 (the RANDOM
-  entry), then the songs in menu order, then `-1` to end it. Set 0 is the
-  3DX+/3DX/maxi3 soundtrack (20 songs), set 1 is maxi1+maxi2 (23), set 2 is
-  the rival themes (12). audio_3dxp's hardcoded tables agree with this
-  exactly, in content and in order, so they were read off a running game --
-  but deriving them makes the port smaller and self-checking.
+- **Every song plays through entry 0 of `nsAudio`'s table.**
+  `clAudioStream::play` keeps the path in `ebx` across `clWaveFile::loadFile`
+  and `fopen`s it again, so substituting inside `loadFile` -- which is what
+  `audio_3dxp` does -- reads the header from one file and the audio from
+  another, and needs assembly to force `ebx` afterwards. Writing the path into
+  the table before the call feeds both reads from one place.
+- **The `std::wstring` constructor does not resolve by name.** It is weak in
+  `libso/libstdc++.so.6` and LINE's `DlSym` does not return it. The game calls
+  a PLT stub at `0x8421390` whose GOT slot is already relocated; that is what
+  to call, identified by its own six bytes. And never return from the hook
+  without writing: the caller's storage is an uninitialised stack slot handed
+  straight to `clSpriteFont::setString` and then destructed, so "no title" is
+  a garbage pointer read and freed. The empty value is `0x97FD4D4`, the shared
+  empty rep plus its 12-byte header, which is exactly what `bgmUpdate` tests
+  for.
+- **Those two returns need a naked trampoline.** They take a hidden sret
+  pointer *the callee pops* (`ret 0x4`). Rust matches that only on i686 System
+  V -- measured, `i686-pc-windows-gnu` returns the struct in `eax` with a
+  plain `ret` -- so `audio_3dxp`'s `-> NsAudio` trick would corrupt the
+  caller's stack by four bytes a call.
 
-**The version-gated NOP is a clamp, and now has expected bytes.** For this
-build (`W3P`/`EN2`/`B`/rev 2) it is `0x87EF4FC` in
-`clSeqCardDisp9::run`, and the three bytes are `0f 4d c2`, `cmovge eax, edx`
-in:
+#### The card screen's BGM row (`bgm_selector`) -- works, with open faults
 
-    movzx  eax, BYTE PTR [ecx]     ; the BGM set
-    mov    edx, 2
-    cmp    al, 3
-    cmovge eax, edx                ; set >= 3 ? 2 : set
-    mov    BYTE PTR [eax+0x16d], dl ; ... into the card
+Card check page 8 (`clSeqCardDisp9`, `run` at `0x087ef0ec`) is a three-row
+settings editor: row 0 BGM volume (`card+0x16C`), **row 1 the BGM set**
+(`card+0x16D`), row 2 print-pass type. Values at `[this+0x44/48/4c]`, maxima
+at `[this+0x5c/60/64]`, cursor row at `[this+0x40]`, artwork on the
+`clSpriteAnime`s at `[this+0x20/24/28]`.
 
-So the game clamps the stored set to at most 2 on its way into the card at
-`+0x16D` -- the same offset audio_3dxp reads and writes -- and NOPing the
-`cmovge` is what lets a custom set index survive. Verify `0f 4d c2` before
-writing.
+Patches that work, all byte-verified:
 
-**Why the plugin has a naked assembly trampoline, and how to avoid it.**
-`clAudioStream::play(emBgmType)` loads `ebx` with `table[id].path`, calls
-`clWaveFile::loadFile(&local, ebx)` to read the header, and then **`fopen`s
-`ebx` again** at `0x8540ff5` to stream the body. `ebx` is callee-saved, so a
-hook on `loadFile` that substitutes a path gets the header from the new file
-and the stream from the old one; the trampoline exists only to force `ebx`
-after the fact. Swapping `0x9321260`'s entry 0 for the duration of the
-original `play` call instead feeds both reads from the table and needs no
-assembly -- and swapping the title pointer with it means `getMusicTitle`
-needs no hook either.
+- `0x087EF16C` and `0x087EF192` force the unlock count to 2. It is derived
+  from `card+0x279` and `card+0x186`, which are **story-mode progress flags**
+  (`mseqStory`, `clWorkSpace::judgeTitle`), so a fresh card never sees this
+  row at all. Forcing it also selects the full `menu_g_cardcheck_8_sound_sel`
+  plate rather than the cut-down or locked ones.
+- `0x087EF936` sets the row's maximum to the real set count.
+- `0x087EFD1A` and `0x087EFEDF` turn `cmp reg,2; jne` into `cmp reg,1; jl`,
+  so row 1 wraps like row 2. Move the immediate without the condition and row
+  0 starts wrapping.
+- `0x087EE656` -- the **only** instruction in the binary that turns the row's
+  value into a frame number, `add eax,0x104`, five bytes and therefore exactly
+  a `call rel32` -- is replaced with a clamp so a set past the artwork draws
+  the first one's.
 
-**Assembly is still needed for one thing: the string returns.**
-`nsAudio::getMusicTitle` and `nsMenuCheck::getBgmSelectName` return
-`std::wstring` by value, which on the i386 Itanium ABI means a hidden sret
-pointer as the first argument *that the callee pops* -- both end in
-`ret 0x4`, confirmed at `0x8541345`. audio_3dxp gets this right by accident
-of writing `-> NsAudio`, since Rust's own i686 System V ABI returns every
-struct through sret and emits `ret 4`. **That is a Linux-ABI coincidence and
-must not be relied on for `i686-pc-windows-gnu`**, where the Microsoft cdecl
-rule is that the caller pops the hidden pointer. Hook those two through an
-explicit trampoline that takes the sret pointer as a plain argument and ends
-in `ret 4`, the way `shim/call.c` already handles the other ABI mismatches.
+**Clamping the value instead does not work, and this cost several rounds.**
+The screen keeps what it last drew at `[this+0x54]` and compares it against
+the current value to decide which way to travel, so *any* window where the two
+disagree -- and restoring the real value after the game has drawn a borrowed
+one is such a window -- sets it off towards a set it has no frames for, where
+it snaps back and starts again. Writing `+0x54` to match does not close it.
+Patch the arithmetic, leave the value alone.
 
-**Dependencies the port does not need.** `rand` (a small PRNG is enough and
-is unit-testable), `widestring` (the titles are NUL-terminated `u32` arrays,
-which is a `Vec<u32>`) and `glob` on Windows, where it is a Linux-only
-dependency today and `std::fs::read_dir` does the job. `hook.rs` drops out
-entirely: it is `hook::hook_symbol` and `platform::write_memory` already.
+**How the row draws.** `ANM` is a playback mode, not a slot: mode 1 shows one
+frame, mode 6 loops a block, mode 4 is a five-frame transition. The resting
+display is frame `0x104 + set` of a 263-frame plate, so the three shipped sets
+rest on 260, 261 and 262. The artwork is a **strip of all three logos with the
+selected one highlighted**, not one logo per set, so there is no slot a fourth
+could occupy. Sprites here resolve through `clImageResourceManager` from ids
+compiled into the `.anm` -- **this screen never calls `Gap::Gfx::igImage::load`**,
+so the hook that substitutes the pre-race logo cannot reach it. The descriptor
+table is at `0x0955aaa0`, stride `0x2c`; the slot a borrowed set draws is
+`menu_p_card_8_sound_3_*`, descriptors `0x0959619C/61C8/61F4`. The grid is
+numbered **opposite to the strip** -- repointing `_1_*` replaced the rightmost
+(R) logo -- which is observed, not inferred.
 
-**And every call into the game must go through `call_game`.** audio_3dxp
-calls its trampolines directly, which is correct on Linux and faults in SSE
-code on Windows. That is the single most mechanical part of the port and the
-easiest to half-finish.
+A pack supplies that slot with `mod_card.png` (128x64, against `mod.png`'s
+192x32) plus optional `_light` and `_dark` states. Packs 5 and 6 have
+hand-composited plates: each title fitted into an 86x26 box, aspect kept,
+stepping down-right by 16x17. Scaling every title to one *width* instead --
+which is what the shipped art looks like it does -- leaves wide ones tiny and
+the canvas half empty.
 
-**The card screen's BGM row, and how a custom set reaches it.** Card check
-page 8 is `clSeqCardDisp9` (`run` at `0x087ef0ec`), a three-row settings
-editor whose rows are an `int[3]` at `[this+0x44]` with their maxima at
-`[this+0x5c]`: row 0 is the BGM volume (`card+0x16C`, an
-`emBgmVolumeType`, four levels, default 2, consumed by `mseqEntry` at
-`0x088d375a` through `SNDStreamSetVolumeTypeFromCard`), **row 1 is the BGM
-set** (`card+0x16D`), row 2 is the print-pass type. The cursor row is
-`[this+0x40]`.
+**Still open, in the order worth attacking:**
 
-Input is `clMenuInput::chkSW(mask)` at `0x0891a13c`, which is worth knowing
-on its own: **it is the single funnel every menu in the game reads buttons
-through, 295 call sites**, and it synthesises its bits from two fields of the
-singleton at `0x097fe8b0` -- `[+0x10]` giving bit 1 (left) at `-1` and bit 2
-(right) at `1`, `[+0x14]` giving `1`->`0x10` gas, `2`->`0x20` brake,
-`3`->`0x40` view, `4`->`0x80` intrude. `exec()` at `0x0891a20c` fills
-`[+0x10]` with `trunc([dev+0x20] * 3.0)` clamped to +-3, where `[dev+0x20]`
-is the steering float. So **menu cursors are the wheel, left and right only;
-this game's menus have no up or down**, which is why the row is scrolled
-sideways and why nothing needs a JAMMA bit injected.
+1. **The row animates by itself**, roughly every 1.5 s with no input. Measured
+   by differencing a recording of the row band. Nothing in the loader touches
+   the value any more and it still happens, so the likeliest cause is that
+   forcing the unlock count puts the screen on a path this build never runs.
+   Unproven.
+2. **A custom set is invisible while the cursor is on the row.** The resting
+   frame is clamped, but the cursor-on-row *transition* is separate code with
+   cases only for destinations 1 and 2 by direction; anything else lands at
+   `0x087EE697`, which is `mov esi,[ebp+8]; jmp` -- no `setAnime` at all.
+   Clamping that dispatch too is the next step.
+3. **The artwork is fixed at launch.** Repointing a descriptor only matters
+   before `clImageResourceManager` instantiates the image, which happens when
+   the plate loads, so the swap runs once at startup against the set
+   `audio.toml` names. Scrolling to a different pack keeps showing that one's
+   plate until the next launch.
+4. **`bgm_selector` still defaults to true.** Given 1 and 2, defaulting it off
+   until they are fixed is the open decision, deliberately left for the next
+   session rather than taken unilaterally.
 
-Three things kept custom sets out of that row, all handled in `src/bgm.rs`
-under `bgm_selector`:
-
-- **The maximum is an unlock count.** `[this+0x68]` is 0, then 1 if
-  `card+0x279` is set, then 2 if `card+0x186` is set, reaching `[this+0x60]`
-  through a three-way dispatch at `0x087ef1bf`. Forcing the two lower writes
-  (`0x087ef16c`, `0x087ef192`) to 2 makes every path take the `== 2` branch,
-  which is also the branch that loads the full
-  `menu_g_cardcheck_8_sound_sel` plate instead of the cut-down (`_2`) or
-  locked (`_no`) ones -- so one change unlocks the row *and* gives it artwork
-  with three blocks of frames. Only that branch's store at `0x087ef936` then
-  needs the real count. **What `card+0x186` and `card+0x279` actually are is
-  still unknown**; forcing past them means the row is offered on cards where
-  the game meant it locked.
-- **Row 1 clamped.** Only row 2 wrapped, and the test is the row index
-  against 2 in both directions (`0x087efd1a` up, `0x087efedf` down). `cmp
-  reg,2; jne` becomes `cmp reg,1; jl`, so rows 1 and 2 wrap and row 0 still
-  clamps. Move the immediate without the condition and row 0 starts wrapping.
-- **The artwork is frame blocks, not images.** Each set plays 59 frames of
-  one `.anm` at start 0, 100 or 200, and for an index of 3 or more the
-  dispatch makes **no `setAnime` call at all**, leaving the previous set's
-  frames on screen. So a custom set borrows the third block from an
-  `an_reset`/`initAnime` hook, and the sprite *descriptor* that block draws
-  from is repointed at the pack's `mod.png`. **The card screen never goes
-  through `Gap::Gfx::igImage::load`**, so the hook that substitutes the
-  pre-race logo cannot reach it: `menu_p_sound_logo_maxi*.png` has zero code
-  references, and sprites here resolve through `clImageResourceManager::load`
-  (`0x08519a88`) from ids compiled into the `.anm`. The descriptor table is at
-  `0x0955aaa0`, stride `0x2c`, `0x1fad` entries, handed over in
-  `clMain::clMain()` at `0x088c7d00`; an entry is `{ const char *path, int,
-  int, int, float w, h, sx, sy, w2, h2, int }` and `maxi1/2/3` are ids
-  `0x1650/0x1651/0x1652` at `0x09598060/0x0959808c/0x095980b8`, all 256x32.
-
-**Still unproven:** that frames 0-58/100-158/200-258 of that plate are
-maxi1/maxi2/maxi3. The `.anm` encoding was not decoded -- the raw dwords
-`0x1650/0x1651/0x1652` do not appear in the file, so ids are stored narrower
-or table-encoded. If the assumption is wrong, a custom set shows the wrong
-plate and repointing the descriptor has no visible effect.
+**The `.anm` format was never decoded.** The sprite ids do not appear in the
+file as dwords, so they are stored narrower or table-encoded. Everything above
+was worked out without it; adding a genuine fourth logo would need it.
 
 ### P6 — Gemballa unlock (from tattoohanz's Gemballa-Unlocker)
 
