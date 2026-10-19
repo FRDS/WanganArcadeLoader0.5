@@ -31,6 +31,10 @@ widescreen_anchor = false
 #       name = "Shown in the list"
 #       file = "track01.wav"
 #   plugins/bgms/<name>/mod.png     the logo shown beside the set
+#   plugins/bgms/<name>/mod_card.png        optional, 128x64, the plate the
+#       card screen's BGM row draws; mod_card_light.png and mod_card_dark.png
+#       are its dimmed and dark states. Supply only mod_card.png and it is
+#       used for all three; supply none and mod.png stands in.
 #
 # Songs are WAV, like the game's own under data/sound/bgm. A pack can also add
 #   stories = ["song name for episode 0", "... episode 1", ...]

@@ -108,6 +108,14 @@ on Windows:
   file = "track01.wav"
   ```
 
+  A pack can also carry `mod_card.png` for the card screen's BGM row, which
+  is a different shape from the pre-race logo: **128x64**, against `mod.png`'s
+  192x32. `mod_card_light.png` and `mod_card_dark.png` are its dimmed and dark
+  states, for when the row is on something else. Supply only `mod_card.png`
+  and it is used for all three; supply none and `mod.png` stands in, which
+  will look stretched. The shipped sets draw their titles in a staircase,
+  stepping down and to the right, if you want to match them.
+
   Songs are WAV, the same as the game's own under `data/sound/bgm`. Add
   `stories = ["...", "..."]` to choose what each story episode plays, one
   name per episode; without it story mode picks from the pack at random. The
