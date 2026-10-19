@@ -651,6 +651,12 @@ const ROW_MAX: usize = 0x087E_F936;
 const WRAP_UP: usize = 0x087E_FD1A;
 /// `cmp eax,0x2; jne` -- the wrap test on the way down.
 const WRAP_DOWN: usize = 0x087E_FEDF;
+/// `add eax,0x104` in `an_reset` -- the **only** place in the binary that
+/// turns the row's value into a frame number. Five bytes, which is exactly a
+/// `call rel32`, so the clamp goes here rather than anywhere near the value
+/// itself.
+const FRAME_FROM_SET: usize = 0x087E_E656;
+const FRAME_FROM_SET_BYTES: [u8; 5] = [0x05, 0x04, 0x01, 0x00, 0x00];
 
 /// Sprite descriptor for `menu_p_card_8_sound_1_3.png`, id `0x1599`, in the
 /// table `clMain` hands to `clImageResourceManager::create`. 44 bytes:
@@ -663,12 +669,15 @@ const WRAP_DOWN: usize = 0x087E_FEDF;
 /// which is the frame a custom set borrows. Pointing the pre-race logo's
 /// descriptor here instead, as this first did, could never have worked: that
 /// one is reached through `igImage::load`, which this screen never calls.
-/// All three states of it. Which one a given frame draws is in the `.anm`,
-/// which has not been decoded -- repointing only `_1_3` changed nothing on
-/// screen, so the frame uses one of the others. Repointing the set as a whole
-/// sidesteps having to know, and is right either way: a custom set always
-/// borrows this slot, so every state of it should be the pack's.
-const LOGO_DESCS: [usize; 3] = [0x0959_6094, 0x0959_60C0, 0x0959_60EC];
+/// All three states of the slot a borrowed set draws from.
+///
+/// The grid is numbered the opposite way round to the strip: repointing
+/// `menu_p_card_8_sound_1_*` replaced the **R** logo on screen, the rightmost
+/// of the three, so `_1_*` is set 2 and `_3_*` is set 0. These are `_3_*`.
+/// Which of the three states a given frame draws is in the `.anm`, which has
+/// not been decoded -- repointing all three sidesteps having to know, and is
+/// right either way, since a custom set always borrows the whole slot.
+const LOGO_DESCS: [usize; 3] = [0x0959_619C, 0x0959_61C8, 0x0959_61F4];
 const LOGO_WIDTH: usize = 0x10;
 const LOGO_HEIGHT: usize = 0x14;
 const LOGO_WIDTH2: usize = 0x20;
@@ -683,9 +692,6 @@ const ROW_SPRITE: usize = 0x24;
 /// -- which nothing here writes, so a blank title means the row was never
 /// drawn rather than that the value was wrong.
 const CURSOR_ROW: usize = 0x40;
-/// The value the row was showing last time, which the screen compares against
-/// the current one to decide whether to travel between sets.
-const ROW_SETTLED: usize = 0x54;
 const UNLOCK_COUNT: usize = 0x68;
 const ROW_LIMIT: usize = 0x60;
 const ROW_TITLE: usize = 0x30;
@@ -949,67 +955,42 @@ fn remember(name: &str) {
 static mut ORIGINAL_AN_RESET: *const () = std::ptr::null();
 static mut ORIGINAL_INIT_ANIME: *const () = std::ptr::null();
 
-/// Shows the game a set it was built to draw, for the length of its own call.
+/// `add eax, 0x104` with the row's value clamped to a set that has a frame.
 ///
-/// Setting the frame ourselves afterwards does not work, and the reason is
-/// worth keeping: with the cursor on the row, `an_reset` starts a **five-frame
-/// transition** (`mode 4`, `count 5`) whose start frame it picks from the
-/// direction of travel and the destination -- `cmp eax,1`, `cmp eax,2`, and
-/// nothing at all for a set past those. That animation then keeps advancing
-/// on the frames after, so a static frame written once is overwritten a
-/// moment later and the row sits mid-slide with nothing highlighted.
+/// This replaces the one instruction that turns the value into a frame
+/// number, and it is deliberately the only thing that knows about the
+/// borrowing. Clamping the value itself was tried twice and cannot work: the
+/// screen keeps what it last drew at `+0x54` and compares it against the
+/// current value to decide which way to travel, so any window where the two
+/// disagree -- and restoring the real value after the game has drawn the
+/// borrowed one *is* such a window -- sets it off towards a set it has no
+/// frames for, where it snaps back and tries again, for ever. Patching the
+/// arithmetic leaves the value alone everywhere, so nothing has anything to
+/// chase.
 ///
-/// So rather than fight the animation, the value is clamped to a set the
-/// game understands while it draws, and put back immediately after. Every
-/// path -- the resting frame, the transition, the direction test against the
-/// previous value at `+0x54` -- then works as written, and `aim_logo` has
-/// already pointed the borrowed set's artwork at the pack.
-unsafe fn borrow_set(this: *mut c_void) -> Option<c_int> {
-	if this.is_null() {
-		return None;
-	}
-	let slot = (this as *mut u8).add(ROW_VALUE).cast::<c_int>();
-	let real = slot.read();
-	if (real as usize) < MENU_SETS {
-		return None;
-	}
-	slot.write(BORROWED_SET);
-	REPORTED.say(format!(
-		"bgm: card row 1 drawn as set {BORROWED_SET} instead of {real}, cursor on row {}",
-		(this as *const u8).add(CURSOR_ROW).cast::<c_int>().read()
-	));
-	Some(real)
-}
-
-unsafe fn give_back(this: *mut c_void, real: Option<c_int>) {
-	let Some(real) = real else {
-		return;
-	};
-	(this as *mut u8).add(ROW_VALUE).cast::<c_int>().write(real);
-	// And tell it the row has settled there.
-	//
-	// The screen keeps the value it last drew at `+0x54` and compares it
-	// against the current one -- `cmp [ecx+0x54], eax` -- to decide which way
-	// to travel. Drawing under the clamp makes it record the borrowed set, so
-	// putting the real one back on its own leaves the two permanently
-	// disagreeing: it sets off towards a set it has no frames for and snaps
-	// back, over and over, with nobody touching the wheel. Writing both keeps
-	// the screen's own invariant, which is that the two match once a move has
-	// finished.
-	(this as *mut u8).add(ROW_SETTLED).cast::<c_int>().write(real);
+/// No stack, no clobber beyond `eax`, and it ends in a plain `ret` because it
+/// is reached by a `call` that replaced an instruction, not by the ABI.
+#[unsafe(naked)]
+unsafe extern "C" fn frame_from_set() {
+	core::arch::naked_asm!(
+		"cmp eax, {sets}",
+		"jb 2f",
+		"mov eax, {borrowed}",
+		"2:",
+		"add eax, 0x104",
+		"ret",
+		sets = const MENU_SETS,
+		borrowed = const BORROWED_SET,
+	)
 }
 
 unsafe extern "C" fn an_reset(this: *mut c_void) {
-	let real = borrow_set(this);
 	call_game::<_, ()>(ORIGINAL_AN_RESET, (this,));
-	give_back(this, real);
 	row_changed(this);
 }
 
 unsafe extern "C" fn init_anime(this: *mut c_void) {
-	let real = borrow_set(this);
 	call_game::<_, ()>(ORIGINAL_INIT_ANIME, (this,));
-	give_back(this, real);
 	row_changed(this);
 }
 
@@ -1046,6 +1027,21 @@ unsafe fn install_selector() {
 	LOGO_SAVED = LOGO_ORIGINAL
 		.iter()
 		.all(|entry| entry.iter().any(|byte| *byte != 0));
+
+	// The frame clamp, in place of the arithmetic it replaces.
+	let found = std::slice::from_raw_parts(FRAME_FROM_SET as *const u8, FRAME_FROM_SET_BYTES.len());
+	if found == FRAME_FROM_SET_BYTES {
+		let after = FRAME_FROM_SET + FRAME_FROM_SET_BYTES.len();
+		let offset = (frame_from_set as usize).wrapping_sub(after) as u32;
+		let mut call = [0xe8u8, 0, 0, 0, 0];
+		call[1..5].copy_from_slice(&offset.to_le_bytes());
+		platform::write_memory(FRAME_FROM_SET as *mut (), &call);
+		platform::log("bgm: a set with no artwork of its own draws the first one's");
+	} else {
+		platform::log(&format!(
+			"bgm: not clamping the row's frame -- {FRAME_FROM_SET:#x} holds {found:02x?}, not 			 {FRAME_FROM_SET_BYTES:02x?}"
+		));
+	}
 
 	// Before anything loads the plate, for the reason in `aim_logo`.
 	if let Some(chosen) = chosen_set() {
