@@ -14,16 +14,17 @@
 //! right -- which is exactly the situation where trusting an offset list
 //! blindly would corrupt a running game.
 //!
-//! The story edit restores **Shima's Blackbird**. The roadmap called chara 30
-//! "Masaki" and that is wrong: resolving the car-id table absolutely -- 311
-//! records of 24 bytes, name pointer at `+8` -- gives id 247 as
-//! `gem_964_38RS_Shima1st` and 251 as `gem_964_RSR_Masaki`. Export puts chara
-//! 30 on 277, `nis_BNR32_Feeling`. All 32 entries were compared against a JPN
-//! dump and chara 30 is the only one that differs, so this is the whole of the
-//! story-car change.
+//! The story edit restores **Shima's Blackbird**, and it is not the edit the
+//! roadmap describes. `0x12ED6B0` -- the one entry of a 32-car roster where
+//! Export differs from a JPN dump -- is in a table story mode never reads,
+//! proved by writing one car into all 32 entries and watching every rival
+//! keep its own. What story mode reads is `STORY_SHIMA` below: 35 `.data`
+//! sites where Export holds model id 277 and JPN holds 248.
 //!
-//! `nis_Z33_Shima` is a different entry, chara 20, identical in both builds --
-//! so seeing Shima in a Z33 is not necessarily this edit failing.
+//! The lesson that cost the most here: **the car table explains a runtime
+//! observation, it never produces one.** Three static readings of it gave
+//! three confident wrong answers about which car Shima drives, each undone by
+//! one line of `car_log` from the running game.
 
 use crate::*;
 
@@ -81,16 +82,24 @@ const CARS: [Patch; 6] = [
 	},
 ];
 
-/// Puts story chara 30 -- Shima -- back in the Gemballa 964 38RS.
+/// The one roster entry where Export differs from a JPN dump, put back.
+///
+/// **This is not what moves Shima** -- see `STORY_SHIMA`. The 32-entry table
+/// at `0x12ED3E0` is read by something, but not by story mode: writing one
+/// car into all 32 entries left every rival in its own car. Kept because it
+/// is the single byte-level difference between the two builds' rosters and
+/// restoring it costs nothing, and because it is the edit the roadmap and
+/// tattoohanz's notes both describe, so a dump without it applied would look
+/// unpatched to anyone comparing.
 ///
 /// Separate from `CARS` because it is safe on its own: a rival's car comes
-/// from `data/characar/gem_964_38RS_Shima1st`, which the Export dump ships
-/// complete, so this needs none of the models `CARS` does.
-const MASAKI: [Patch; 1] = [Patch {
+/// from `data/characar/`, which the Export dump ships complete, so this needs
+/// none of the models `CARS` does.
+const ROSTER_CAR: [Patch; 1] = [Patch {
 	offset: 0x12E_D6B0,
 	expect: &[0x15, 0x01, 0x00, 0x00],
 	write: &[0xf7, 0x00, 0x00, 0x00],
-	what: "story chara 30 (Shima) drives the Gemballa 964 38RS again (277 -> 247)",
+	what: "roster entry 30, back to the JPN value (277 -> 247)",
 }];
 
 /// Whether every patch in the set finds the bytes it expects.
@@ -163,30 +172,6 @@ fn models_present() -> bool {
 		.all(|car| std::path::Path::new(&format!("data/car/{car}/car.lua")).is_file())
 }
 
-/// **Diagnostic, kept off.** Writes car 247 into every one of the 32 rival
-/// entries.
-///
-/// Run on hardware on 2026-10-17 and it answered: with all 32 set to the
-/// Gemballa, story chapter 6/7 still showed Shima in the Z33. **Story mode
-/// does not read this table.** So `0x12ED6B0` -- the one car assignment that
-/// differs between the Export and JPN binaries, and the edit the roadmap
-/// describes as putting a story rival back in the Gemballa -- does not do
-/// that, whatever it does do. Left here because it is the cheap question to
-/// ask of any table we think drives something: set the whole thing to one
-/// value and see if the game notices.
-const PROBE_ALL: bool = false;
-
-/// **Diagnostic.** Every dword in `.rodata` that holds 277, the model id the
-/// engine actually resolves to `nis_Z33_Shima` for the story Episode 7 rival.
-///
-/// The roster table is not the source -- forcing all 32 of its entries to one
-/// car changed nothing -- and `car_log` shows no id-space conversion, so the
-/// 277 the game reads is stored directly somewhere else. There are only
-/// thirteen of them in the whole of `.rodata`, so asking the game which one
-/// matters is one run, where reasoning about which looks like story data has
-/// now been wrong three times.
-const PROBE_277: bool = false;
-
 /// **Shima's Blackbird.** The 35 `.data` sites where the Export build holds
 /// model id 277 and a JPN dump holds 248, at the same offset within the
 /// section.
@@ -206,7 +191,6 @@ const PROBE_277: bool = false;
 /// every `.rodata` dword, the three `nsCarParts` id-space converters and the
 /// whole call chain down to `clCarConstructParam+0x08`; `.data` was the one
 /// section never probed, and the answer was sitting in it.
-const STORY_CAR: bool = true;
 const STORY_SHIMA: [usize; 35] = [
 	0x17035D8,
 	0x1703670,
@@ -245,24 +229,6 @@ const STORY_SHIMA: [usize; 35] = [
 	0x170A790,
 ];
 
-const RODATA_277: [usize; 13] = [
-	0x012A_D8F8,
-	0x012E_2168,
-	0x012E_51A4,
-	0x012E_6E9C,
-	0x012E_D6B0,
-	0x0139_B790,
-	0x013D_C314,
-	0x013D_CD24,
-	0x013D_CD28,
-	0x013D_CD2C,
-	0x013D_CD30,
-	0x0140_4570,
-	0x0140_5020,
-];
-const ROSTER: usize = 0x12E_D3E0;
-const ROSTER_LEN: usize = 32;
-
 pub unsafe fn init() {
 	if !CONFIG.gemballa {
 		return;
@@ -272,45 +238,20 @@ pub unsafe fn init() {
 		return;
 	}
 
-	// Shima first, because it is the half that stands alone.
-	apply(&MASAKI, "the story car");
+	apply(&ROSTER_CAR, "the roster entry");
 
-	if STORY_CAR {
-		let mut done = 0;
-		for off in STORY_SHIMA {
-			if read_image(off, 4).as_deref() == Some(&277u32.to_le_bytes()) {
-				platform::write_memory((BASE + off) as *mut (), &248u32.to_le_bytes());
-				done += 1;
-			}
+	let mut done = 0;
+	for off in STORY_SHIMA {
+		if read_image(off, 4).as_deref() == Some(&277u32.to_le_bytes()) {
+			platform::write_memory((BASE + off) as *mut (), &248u32.to_le_bytes());
+			done += 1;
 		}
-		platform::log(&format!(
-			"gemballa: Shima drives the Blackbird again -- {done} of {} sites 			 restored from 277 (nis_Z33_Shima) to 248 (gem_964_38RS_Shima2nd)",
-			STORY_SHIMA.len()
-		));
 	}
-
-	if PROBE_277 {
-		let mut done = 0;
-		for off in RODATA_277 {
-			if read_image(off, 4).as_deref() == Some(&277u32.to_le_bytes()) {
-				platform::write_memory((BASE + off) as *mut (), &247u32.to_le_bytes());
-				done += 1;
-			}
-		}
-		platform::log(&format!(
-			"gemballa: PROBE -- {done} of {} .rodata sites holding 277 set to 247",
-			RODATA_277.len()
-		));
-	}
-
-	if PROBE_ALL {
-		for i in 0..ROSTER_LEN {
-			platform::write_memory((BASE + ROSTER + i * 24) as *mut (), &247u32.to_le_bytes());
-		}
-		platform::log(&format!(
-			"gemballa: PROBE -- all {ROSTER_LEN} rival entries set to car 247. 			 If rivals are still their own cars, story mode does not read this table."
-		));
-	}
+	platform::log(&format!(
+		"gemballa: Shima drives the Blackbird again -- {done} of {} sites \
+		 restored from 277 (nis_Z33_Shima) to 248 (gem_964_38RS_Shima2nd)",
+		STORY_SHIMA.len()
+	));
 
 	if models_present() {
 		apply(&CARS, "the maker unlock");
@@ -339,7 +280,7 @@ mod tests {
 
 	#[test]
 	fn every_patch_writes_as_many_bytes_as_it_checks() {
-		for p in CARS.iter().chain(MASAKI.iter()) {
+		for p in CARS.iter().chain(ROSTER_CAR.iter()) {
 			assert_eq!(
 				p.expect.len(),
 				p.write.len(),
@@ -354,11 +295,11 @@ mod tests {
 	#[test]
 	fn a_matching_image_passes_and_a_changed_one_does_not() {
 		assert!(all_present(&CARS, &image_of(&CARS)));
-		assert!(all_present(&MASAKI, &image_of(&MASAKI)));
+		assert!(all_present(&ROSTER_CAR, &image_of(&ROSTER_CAR)));
 		// One byte out anywhere stops the whole set, which is the point:
 		// half of this applied is worse than none of it.
 		assert!(!all_present(&CARS, &|_, len| Some(vec![0u8; len])));
-		assert!(!all_present(&MASAKI, &|_, _| None));
+		assert!(!all_present(&ROSTER_CAR, &|_, _| None));
 	}
 
 	/// Car 247 is `gem_964_38RS_Shima1st` in both builds, read off the car
@@ -366,8 +307,8 @@ mod tests {
 	/// entry as Masaki's.
 	#[test]
 	fn shima_goes_back_to_the_jpn_car_id() {
-		let before = u32::from_le_bytes(MASAKI[0].expect.try_into().unwrap());
-		let after = u32::from_le_bytes(MASAKI[0].write.try_into().unwrap());
+		let before = u32::from_le_bytes(ROSTER_CAR[0].expect.try_into().unwrap());
+		let after = u32::from_le_bytes(ROSTER_CAR[0].write.try_into().unwrap());
 		assert_eq!(before, 277);
 		assert_eq!(after, 247);
 	}

@@ -53,6 +53,25 @@ double wal_call_float(void *f, uint32_t count, const uint32_t *args)
 
 
 /*
+ * Captures who asked for a car.
+ *
+ * `nsCarParts::LuaNickNameGetFromModelID` is detoured here. The detour leaves
+ * the caller's return address where a normal call puts it, so
+ * `__builtin_return_address(0)` is the game's call site. Rust cannot read a
+ * return address portably; C can, and this file is already compiled for both
+ * targets.
+ *
+ * One frame is all this gets. Scanning further up the stack for the rest of
+ * the chain was tried and does not work -- see `carparts.rs`.
+ */
+extern const char *wal_nickname_seen(int model_id, void *caller);
+
+const char *wal_nickname_trampoline(int model_id)
+{
+	return wal_nickname_seen(model_id, __builtin_return_address(0));
+}
+
+/*
  * The same trick one frame up.
  *
  * Every car -- the player's and every rival's -- reaches
@@ -65,29 +84,4 @@ extern void *wal_construct_body_seen(void *self, const void *param, void *caller
 void *wal_construct_body_trampoline(void *self, const void *param)
 {
 	return wal_construct_body_seen(self, param, __builtin_return_address(0));
-}
-
-/*
- * Captures who asked for a car, and the stack it was asked from.
- *
- * `nsCarParts::LuaNickNameGetFromModelID` is detoured here. The detour leaves
- * the caller's return address where a normal call puts it, so
- * `__builtin_return_address(0)` is the game's call site, and the frame
- * address lets the Rust side scan upwards for the rest of the chain. Rust
- * cannot read either portably; C can, and this file is already compiled for
- * both targets.
- *
- * The whole chain in one run.
- *
- * Climbing one frame per hook costs a race per frame, and three frames up is
- * still generic car loading: nickname <- constructBody <- loadBody. Passing a
- * stack pointer lets the Rust side scan upwards for return addresses and name
- * them all at once, the way `crash.rs` already names a faulting stack.
- */
-extern const char *wal_nickname_stack(int model_id, void *caller, void *stack);
-
-const char *wal_nickname_trampoline2(int model_id)
-{
-	return wal_nickname_stack(model_id, __builtin_return_address(0),
-				  __builtin_frame_address(0));
 }

@@ -50,11 +50,11 @@ unsafe extern "C" fn bng_from_car(car: c_int) -> c_int {
 }
 
 extern "C" {
-	/// The detour target, in `shim/call.c`: it captures its own return
-	/// address -- the game's call site -- and hands it to `wal_nickname_seen`
-	/// below. Rust cannot read a return address portably, and the shim is
-	/// already compiled for both targets.
-	fn wal_nickname_trampoline2(model_id: c_int) -> *const c_char;
+	/// The detour targets, in `shim/call.c`: each captures its own return
+	/// address -- the game's call site -- and hands it to the `*_seen`
+	/// function below. Rust cannot read a return address portably, and the
+	/// shim is already compiled for both targets.
+	fn wal_nickname_trampoline(model_id: c_int) -> *const c_char;
 	fn wal_construct_body_trampoline(self_: *const c_void, param: *const c_void) -> *const c_void;
 }
 
@@ -94,43 +94,14 @@ unsafe extern "C" fn wal_construct_body_seen(
 /// `nsCarParts::LuaNickNameGetFromModelID(emCarModelID)` -> the folder name,
 /// with the game function that asked for it.
 ///
-/// **Naming the caller is the point.** The id the story Episode 7 rival
-/// resolves to -- 277, `nis_Z33_Shima` -- is not in the roster table, not
-/// produced by any id-space conversion, and not in any `.rodata` dword, all
-/// measured. So the next question is not "which table holds 277" but "which
-/// code asks for it", and the answer is on the stack.
-/// How far up the stack to look for return addresses.
-const STACK_WORDS: usize = 256;
-
-/// Every game function on the stack, outermost call first.
-///
-/// **This does not work, and is kept only so nobody tries it again the same
-/// way.** Scanning 256 words up from `__builtin_frame_address(0)` inside the
-/// detour finds the immediate caller and then nothing: one run produced
-/// `constructBody+0x1a33` followed by `igAGLEVisualContext::unloadTexture`,
-/// which is stale stack residue rather than a frame. Either the detour's
-/// frame is not adjacent to the game's, or the chain is deeper than the
-/// window. A real frame-pointer walk, or a window anchored on the game's
-/// `esp` rather than ours, would be the thing to try.
-unsafe fn callers(stack: *const ()) -> Vec<String> {
-	let mut out = Vec::new();
-	for i in 0..STACK_WORDS {
-		let word = (stack as *const u32).add(i).read_unaligned();
-		if let Some(name) = elfsym::describe(word) {
-			if !out.contains(&name) {
-				out.push(name);
-			}
-		}
-	}
-	out
-}
-
+/// **Naming the caller is the point**, and one frame is all it gives. A stack
+/// scan from the detour's own frame was tried and does not work: 256 words up
+/// from `__builtin_frame_address(0)` found the immediate caller and then
+/// `igAGLEVisualContext::unloadTexture`, which is residue rather than a
+/// frame. A real frame-pointer walk, or a window anchored on the game's `esp`
+/// rather than ours, is what that would take.
 #[no_mangle]
-unsafe extern "C" fn wal_nickname_stack(
-	model_id: c_int,
-	caller: *const (),
-	stack: *const (),
-) -> *const c_char {
+unsafe extern "C" fn wal_nickname_seen(model_id: c_int, caller: *const ()) -> *const c_char {
 	let name: *const c_char = call_game(ORIGINAL_NICKNAME, (model_id,));
 	let text = if name.is_null() {
 		"(null)".to_string()
@@ -150,9 +121,6 @@ unsafe extern "C" fn wal_nickname_stack(
 	let who = elfsym::describe(caller as u32)
 		.unwrap_or_else(|| format!("0x{:08x}", caller as usize));
 	REPORTED.say(format!("car: model id {model_id} is {text}, asked for by {who}"));
-	for (depth, frame) in callers(stack).iter().take(14).enumerate() {
-		REPORTED.say(format!("car:   [{model_id}] frame {depth}: {frame}"));
-	}
 	name
 }
 
@@ -163,7 +131,7 @@ pub unsafe fn init() {
 	ORIGINAL_NICKNAME = res::watch(
 		"car",
 		"_ZN10nsCarParts25LuaNickNameGetFromModelIDENS_12emCarModelIDE",
-		wal_nickname_trampoline2 as *const (),
+		wal_nickname_trampoline as *const (),
 		"nsCarParts::LuaNickNameGetFromModelID",
 	);
 	ORIGINAL_CONSTRUCT_BODY = res::watch(
