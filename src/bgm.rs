@@ -807,8 +807,17 @@ static mut LOGO_SAVED: bool = false;
 /// Which set the descriptor points at, so it is only rewritten on a change.
 static mut LOGO_SET: i32 = -1;
 
-/// Points the borrowed block's descriptor at `set`'s own image, or back at
-/// the logo it shipped with.
+/// Points the borrowed set's descriptor at `set`'s own image, or back at the
+/// artwork it shipped with.
+///
+/// **This has to happen before the plate is loaded**, because that is when
+/// `clImageResourceManager` instantiates the images the frames refer to;
+/// repointing a descriptor afterwards changes nothing that is already on
+/// screen. So it runs once at startup against the set `plugins/audio.toml`
+/// names, which is the set the screen is entered on. Scrolling to a different
+/// pack within the screen keeps showing that one's artwork until the next
+/// launch -- the row and the music follow immediately, only the picture
+/// lags.
 unsafe fn aim_logo(set: i32) {
 	if !LOGO_SAVED || LOGO_SET == set {
 		return;
@@ -835,6 +844,9 @@ unsafe fn aim_logo(set: i32) {
 }
 
 static mut LOAD_ANIME: *const () = std::ptr::null();
+/// The screen the plate has been loaded for, so it is loaded once per visit
+/// rather than once per redraw.
+static mut PLATE_LOADED_FOR: *mut c_void = std::ptr::null_mut();
 /// The row value the screen last showed, so the choice is written out once
 /// per change rather than once per frame.
 static mut ROW_SHOWN: i32 = -1;
@@ -866,19 +878,26 @@ unsafe fn row_changed(this: *mut c_void) {
 		return;
 	}
 	SHOWN_SET = value;
-	aim_logo(value);
 
 	// Make sure the row is holding the full plate. The game picks which one
 	// from the unlock count before the patched value exists, so left alone it
 	// keeps the locked plate and every frame the row asks for is out of range
-	// -- which is a blank row whatever is selected, the game's own three sets
-	// included. Loading it once sticks.
-	let sprite = (this as *const u8)
-		.add(ROW_SPRITE)
-		.cast::<*mut c_void>()
-		.read();
-	if !sprite.is_null() && !LOAD_ANIME.is_null() {
-		call_game::<_, ()>(LOAD_ANIME, (sprite, SOUND_PLATE, PLATE_MODE, 0, 0, 1));
+	// -- a blank row whatever is selected, the game's own three sets included.
+	//
+	// **Once per screen, not once per call.** Loading an anime restarts it,
+	// and this runs on every `an_reset`, so doing it unconditionally made the
+	// row replay its slide roughly every 1.5 seconds whether or not anybody
+	// touched the wheel. Measured off a recording: bursts at 2.6, 4.3, 5.6,
+	// 7.4, 9.2, 11.0, 12.8 seconds and so on, with the wheel untouched.
+	if PLATE_LOADED_FOR != this && !LOAD_ANIME.is_null() {
+		let sprite = (this as *const u8)
+			.add(ROW_SPRITE)
+			.cast::<*mut c_void>()
+			.read();
+		if !sprite.is_null() {
+			call_game::<_, ()>(LOAD_ANIME, (sprite, SOUND_PLATE, PLATE_MODE, 0, 0, 1));
+			PLATE_LOADED_FOR = this;
+		}
 	}
 
 	if ROW_SHOWN != value {
@@ -994,6 +1013,10 @@ unsafe fn install_selector() {
 		.unwrap_or([0; LOGO_BYTES]);
 	LOGO_SAVED = LOGO_ORIGINAL.iter().any(|byte| *byte != 0);
 
+	// Before anything loads the plate, for the reason in `aim_logo`.
+	if let Some(chosen) = chosen_set() {
+		aim_logo(chosen as i32);
+	}
 	LOAD_ANIME = hook::get_symbol("_ZN13clSpriteAnime8setAnimeEi3ANMiii") as *const ();
 	if LOAD_ANIME.is_null() {
 		platform::log("bgm: clSpriteAnime::setAnime is missing, so the BGM row will stay blank");
