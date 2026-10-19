@@ -53,89 +53,6 @@ extern "C" fn adm_fb_config() -> *const u8 {
 	Box::leak(Box::new(0))
 }
 
-/// Receives the driver's own account of what the game is doing wrong. The
-/// engine renders the world through fixed-function and multitexture state
-/// rather than Cg, so when it comes out black there is nothing in any game log
-/// to explain it — only the driver knows.
-extern "system" fn gl_debug_message(
-	_source: u32,
-	kind: u32,
-	id: u32,
-	severity: u32,
-	_length: i32,
-	message: *const c_char,
-	_user: *mut c_void,
-) {
-	// Chatty driver hints would bury the real errors.
-	if severity == gl::DEBUG_SEVERITY_NOTIFICATION {
-		return;
-	}
-	let text = unsafe {
-		if message.is_null() {
-			return;
-		}
-		CStr::from_ptr(message).to_string_lossy().into_owned()
-	};
-	let kind = match kind {
-		gl::DEBUG_TYPE_ERROR => "error",
-		gl::DEBUG_TYPE_DEPRECATED_BEHAVIOR => "deprecated",
-		gl::DEBUG_TYPE_UNDEFINED_BEHAVIOR => "undefined",
-		gl::DEBUG_TYPE_PORTABILITY => "portability",
-		gl::DEBUG_TYPE_PERFORMANCE => "performance",
-		_ => "other",
-	};
-	let line = format!("GL {kind} [{id}]: {}", text.trim_end());
-	if gl_first_time(&line) {
-		platform::log(&format!("{line}  (repeats suppressed)"));
-		if text.contains("ProgramStringARB") {
-			log_arb_program_error();
-		}
-	}
-}
-
-/// The driver's parse error for the ARB program it just rejected. Only ever
-/// called once, from inside the debug callback: with DEBUG_OUTPUT_SYNCHRONOUS
-/// the callback runs on the calling thread while this state is still current,
-/// but querying GL from inside it is re-entrant, so it is deliberately a
-/// one-shot.
-fn log_arb_program_error() {
-	const PROGRAM_ERROR_POSITION_ARB: u32 = 0x864B;
-	const PROGRAM_ERROR_STRING_ARB: u32 = 0x8874;
-	unsafe {
-		let mut position: i32 = -1;
-		gl::GetIntegerv(PROGRAM_ERROR_POSITION_ARB, &mut position);
-		let message = gl::GetString(PROGRAM_ERROR_STRING_ARB);
-		let message = if message.is_null() {
-			"(none)".to_string()
-		} else {
-			CStr::from_ptr(message as *const c_char)
-				.to_string_lossy()
-				.into_owned()
-		};
-		platform::log(&format!(
-			"GL ARB program rejected at offset {position}: {}",
-			message.trim_end()
-		));
-	}
-}
-
-const GL_MAX_DISTINCT: usize = 64;
-static GL_SEEN: std::sync::Mutex<Option<std::collections::HashSet<String>>> =
-	std::sync::Mutex::new(None);
-
-/// True the first time this exact message appears. The driver repeats itself
-/// for every offending draw call, which turned one run's log into 70 MB.
-fn gl_first_time(message: &str) -> bool {
-	let Ok(mut seen) = GL_SEEN.lock() else {
-		return false;
-	};
-	let seen = seen.get_or_insert_with(std::collections::HashSet::new);
-	if seen.len() >= GL_MAX_DISTINCT {
-		return false;
-	}
-	seen.insert(message.to_string())
-}
-
 /// Logs which OpenGL implementation the game ended up on. Nothing recorded
 /// this before, so a rendering report couldn't say which driver produced it.
 unsafe fn log_gl_info() {
@@ -179,31 +96,11 @@ unsafe fn log_gl_info() {
 			if present { "yes" } else { "NO" }
 		));
 	}
-
-	if CONFIG.gl_debug {
-		gl::Enable(gl::DEBUG_OUTPUT);
-		gl::Enable(gl::DEBUG_OUTPUT_SYNCHRONOUS);
-		gl::DebugMessageCallback(Some(gl_debug_message), std::ptr::null());
-		// Everything except the notification flood, which the callback drops.
-		gl::DebugMessageControl(
-			gl::DONT_CARE,
-			gl::DONT_CARE,
-			gl::DONT_CARE,
-			0,
-			std::ptr::null(),
-			gl::TRUE,
-		);
-		platform::log("GL debug output enabled");
-	}
 }
 
 unsafe extern "C" fn adm_window() -> *mut AdmWindow {
 	let mut glfw = glfw::init(glfw::fail_on_errors).unwrap();
 	glfw.window_hint(WindowHint::Resizable(false)); // Force floating on tiling window managers
-	if CONFIG.gl_debug {
-		// Must be requested before the context exists.
-		glfw.window_hint(WindowHint::OpenGlDebugContext(true));
-	}
 	let (mut window, _) = glfw.with_primary_monitor(|glfw, m| {
 		let fullscreen = if CONFIG.fullscreen {
 			m.and_then(|m| m.get_video_mode().map(|mode| (m, mode)))

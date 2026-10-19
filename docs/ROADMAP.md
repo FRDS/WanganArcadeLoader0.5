@@ -462,7 +462,8 @@ release; the first two are the ones with user-visible consequences.
   no depth or stencil today, so it needs care rather than enthusiasm. Until
   then: fullscreen for any render size that does not fit the window.
 - **`fopen64` cannot be hooked** (MinHook declines LINE's stub at `0x40ef00`),
-  so some file activity is invisible to `file_log`. This is not cosmetic: the
+  so some file activity cannot be observed or redirected. This is not
+  cosmetic: the
   engine reads `data/shader/*` through it, so the one measurement that would
   settle when the engine loads shaders relative to window creation is the one
   we cannot take.

@@ -2,8 +2,8 @@
 //!
 //! The game reports nothing about itself, so the loader has to -- and most of
 //! what is worth reporting sits on a path the engine walks every frame or
-//! every draw. An early `gl_debug` build without this produced a 70 MB log in
-//! a single run, which is why deduplication is a rule here rather than a
+//! every draw. An OpenGL debug-output build without this once produced a 70 MB
+//! log in a single run, which is why deduplication is a rule here rather than a
 //! nicety.
 //!
 //! Each subsystem keeps its own `Reported`, so a budget spent by one does not

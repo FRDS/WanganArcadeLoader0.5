@@ -65,21 +65,13 @@ shader_mode = "auto"
 # Diagnostics, all written to wal_3dxp.log (the terminal on Linux). The game's
 # own reporting is compiled out of the build it ships as, so these are the only
 # way to see inside it.
-#   input_log  every controller and input, with the name for keyconfig.toml
-#   cg_log     the shader profile chosen, and the listing for any failure
-#   file_log   every file opened; failures are logged either way
 #   card_log   every card-printer command; refusals are logged either way
 #   car_log    every car the engine resolves, by id and by folder name,
 #              with the function that asked for it
-#   gl_debug   an OpenGL debug context, relaying the driver's own messages
 #   res_log    the screen size, viewports and projections the engine asks for
 #              (most of it only at a custom resolution)
-input_log = false
-cg_log = false
-file_log = false
 card_log = false
 car_log = false
-gl_debug = false
 res_log = false
 
 # Map a path the game asks for onto a real file, for the absolute Linux paths

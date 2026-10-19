@@ -79,27 +79,23 @@ Wheels usually aren't in SDL's pad database, so they use raw joystick
 bindings (`JOY_AXIS…`, `JOY_BUTTON…`; the list is at the bottom of
 `keyconfig.toml`):
 
-1. Set `input_log = true` in `config.toml` and start the game.
-2. Turn the wheel both ways, press each pedal and the buttons you want.
-3. `wal_3dxp.log` lists your devices (`JOY0 = "..."`) and each input with the
-   name to use, for example
-   `JOY0_AXIS2 = -0.98 (a pedal resting at +1? use JOY0_AXIS2_FULL_INV)`.
-4. Put those names in `keyconfig.toml`, for example
-   `GAS = ["JOY0_AXIS2_FULL_INV"]`, then set `input_log` back to `false`.
+1. Open "Set up USB game controllers" (run `joy.cpl`), pick your wheel and
+   click Properties. Turn the wheel and press each pedal and button, and note
+   which numbered axis or button moves.
+2. SDL numbers axes, buttons and hats in the same order Windows does, so those
+   are the numbers to use. Start the game once and `wal_3dxp.log` names each
+   device it opened — `JOY0 = "..." (4 axes, 12 buttons, 1 hats)` — which is
+   how to tell `JOY0` from `JOY1` when more than one is plugged in.
+3. Put the names in `keyconfig.toml`, for example
+   `GAS = ["JOY0_AXIS2_FULL_INV"]`. A pedal that rests at +1 wants
+   `_FULL_INV`, one that rests at -1 wants `_FULL`; if a pedal reads backwards
+   in game, swap the two.
 
 ## Configuration
 
 `config.toml` works as on Linux. Missing keys use their defaults. Differences
 on Windows:
 
-- `input_log` (default `false`): logs controllers and inputs; see above.
-- `cg_log` (default `false`): logs the game's Cg shader calls — which profile
-  the engine asks for, which one Cg picks for your GPU, and the compiler
-  listing for any shader that fails. Turn this on if the world renders black or
-  untextured while the HUD looks right. The engine's own shader reporting in
-  `alchemy.ini` (`printCompiledShaders`, `defaultReportLevel`) is marked "Debug
-  only" and is compiled out of the release build the game ships as, so it
-  cannot tell you any of this — the loader has to.
 - `card_log` (default `false`): logs every command the game sends the card
   reader, its payload size and the status the emulation answers with. Turn this
   on if the title screen says the card reader isn't functional, if a save

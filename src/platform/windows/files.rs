@@ -75,12 +75,8 @@ unsafe fn report(call: &str, original: &str, used: &str, ok: bool, result: Strin
 	} else {
 		format!(" -> \"{used}\"")
 	};
-	if !ok {
-		if first_failure(used) {
-			crate::wal_log!("{call}(\"{original}\"){redirected} = {result} FAILED");
-		}
-	} else if CONFIG.file_log {
-		crate::wal_log!("{call}(\"{original}\"){redirected} = {result}");
+	if !ok && first_failure(used) {
+		crate::wal_log!("{call}(\"{original}\"){redirected} = {result} FAILED");
 	}
 }
 

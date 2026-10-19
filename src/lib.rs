@@ -111,20 +111,6 @@ pub struct Config {
 	/// MangoHUD (see start.sh), so the default is 60 only on Windows.
 	fps_limit: u32,
 
-	/// Log controllers and every input to find binding names (see keyconfig.toml).
-	input_log: bool,
-
-	/// Log the game's Cg calls: the shader profile chosen for this GPU, and the
-	/// compiler listing for any program that fails. Windows only — the engine's
-	/// own shader reporting is compiled out of the release build it ships as.
-	#[cfg_attr(unix, allow(dead_code))]
-	cg_log: bool,
-
-	/// Log every file the game opens. Windows only; failed opens are logged
-	/// either way, since a path LINE can't reach fails silently otherwise.
-	#[cfg_attr(unix, allow(dead_code))]
-	file_log: bool,
-
 	/// Log every card-printer command, its payload size and the status the
 	/// printer answers with. Commands the emulation does not implement, and
 	/// writes it refuses, are reported either way.
@@ -141,11 +127,6 @@ pub struct Config {
 	/// to. This is how to find out what a story rival is actually being
 	/// handed, which no table in the binary turned out to answer.
 	car_log: bool,
-
-	/// Ask for an OpenGL debug context and log the driver's own messages. The
-	/// world is drawn with fixed-function and multitexture state, not Cg, so
-	/// this is the only account of why it might come out wrong.
-	gl_debug: bool,
 
 	/// How to handle the dump's NVIDIA-only shaders. See `shader.rs`.
 	shader_mode: ShaderMode,
@@ -178,13 +159,9 @@ const fn default_config() -> Config {
 		file_redirect: None,
 		vsync: true,
 		fps_limit: if cfg!(windows) { 60 } else { 0 },
-		input_log: false,
-		cg_log: false,
-		file_log: false,
 		card_log: false,
 		car_log: false,
 		res_log: false,
-		gl_debug: false,
 		shader_mode: ShaderMode::Auto,
 	}
 }

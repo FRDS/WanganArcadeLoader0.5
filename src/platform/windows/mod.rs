@@ -5,7 +5,6 @@
 //! we hook by address where the game needs different behaviour.
 
 mod alarm;
-mod cg;
 mod crash;
 mod files;
 mod ioctl;
@@ -112,9 +111,6 @@ pub unsafe extern "C" fn OnDlOpen(lib_name: *const c_char, result: *mut *mut c_v
 	crate::wal_log!("OnDlOpen {name} -> {dll}");
 	slot.store(module, Ordering::Relaxed);
 	*result = module;
-	if CONFIG.cg_log {
-		cg::prime(module);
-	}
 	true
 }
 
@@ -138,11 +134,7 @@ pub unsafe extern "C" fn OnDlSym(
 		// and no warning. Say so instead of failing silently later.
 		crate::wal_log!("OnDlSym: {name} is not exported by the Windows Cg DLLs");
 	}
-	*result = if CONFIG.cg_log {
-		cg::wrapper(&name, real).unwrap_or(real)
-	} else {
-		real
-	};
+	*result = real;
 	true
 }
 

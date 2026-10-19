@@ -73,8 +73,6 @@ pub fn axis_value(raw: f32, mode: AxisMode, deadzone: f32) -> f32 {
 /// A raw joystick: any wheel, pedals or stick SDL can see, mapped or not.
 struct Joy {
 	joystick: joystick::Joystick,
-	/// Axis values at the first poll, to tell pedals from sticks in the log.
-	rest: Vec<f32>,
 }
 
 #[derive(Clone, Default)]
@@ -99,7 +97,6 @@ pub struct PollState {
 	last_joy_state: Vec<JoyState>,
 	window: *mut glfw::ffi::GLFWwindow,
 	deadzone: f32,
-	input_log: bool,
 	keyboard_state: Vec<Keycode>,
 	last_keyboard_state: Vec<Keycode>,
 	button_state: Vec<Button>,
@@ -317,31 +314,11 @@ fn parse_joy_binding(value: &str) -> Option<KeyBinding> {
 	None
 }
 
-/// The keyconfig name of a key, pad button or pad axis, for the input log.
-fn binding_name(binding: &KeyBinding) -> String {
-	for (name, entry) in MAPPINGS.entries() {
-		let same = match (entry, binding) {
-			(KeyBinding::Keycode(a), KeyBinding::Keycode(b)) => a == b,
-			(KeyBinding::Button(a), KeyBinding::Button(b)) => a == b,
-			(KeyBinding::Axis(a), KeyBinding::Axis(b)) => a == b,
-			_ => false,
-		};
-		if same {
-			return name.to_string();
-		}
-	}
-	format!("{binding:?}")
-}
-
 impl PollState {
 	/// Keyboard input is read from the game's GLFW window; SDL handles
 	/// controllers (as game controllers) and every joystick (as raw axes,
 	/// buttons and hats, for wheels and pedals).
-	pub fn new(
-		window: *mut glfw::ffi::GLFWwindow,
-		axis_deadzone: f32,
-		input_log: bool,
-	) -> Result<Self, String> {
+	pub fn new(window: *mut glfw::ffi::GLFWwindow, axis_deadzone: f32) -> Result<Self, String> {
 		// SDL has no window of its own here, so don't let it drop input when
 		// it thinks the application is in the background.
 		sdl2::hint::set("SDL_JOYSTICK_ALLOW_BACKGROUND_EVENTS", "1");
@@ -367,7 +344,6 @@ impl PollState {
 			last_joy_state: Vec::new(),
 			window,
 			deadzone: axis_deadzone,
-			input_log,
 			keyboard_state: Vec::with_capacity(255),
 			last_keyboard_state: Vec::with_capacity(255),
 			button_state: Vec::with_capacity(32),
@@ -383,12 +359,6 @@ impl PollState {
 		Ok(state)
 	}
 
-	fn log(&self, msg: &str) {
-		if self.input_log {
-			crate::platform::log(&format!("input: {msg}"));
-		}
-	}
-
 	/// Opens device `index` as a raw joystick, and as a game controller if SDL
 	/// has a mapping for it. Devices already open are skipped.
 	fn add_device(&mut self, index: u32) {
@@ -401,7 +371,6 @@ impl PollState {
 					.flatten()
 					.any(|joy| joy.joystick.instance_id() == id);
 				if !already_open {
-					let rest = Vec::new();
 					let slot = match self.joys.iter().position(Option::is_none) {
 						Some(slot) => slot,
 						None => {
@@ -423,7 +392,7 @@ impl PollState {
 							""
 						}
 					));
-					self.joys[slot] = Some(Joy { joystick, rest });
+					self.joys[slot] = Some(Joy { joystick });
 				}
 			}
 			Err(err) => crate::platform::log(&format!("input: can't open device {index}: {err}")),
@@ -475,9 +444,6 @@ impl PollState {
 					};
 					if pressed && !self.keyboard_state.contains(key) {
 						self.keyboard_state.push(*key);
-						if !self.last_keyboard_state.contains(key) {
-							self.log(&format!("{} pressed", binding_name(binding)));
-						}
 					}
 				}
 			}
@@ -491,10 +457,6 @@ impl PollState {
 				Event::ControllerButtonDown { button, .. } => {
 					if !self.button_state.contains(&button) {
 						self.button_state.push(button);
-						self.log(&format!(
-							"{} pressed",
-							binding_name(&KeyBinding::Button(button))
-						));
 					}
 				}
 				Event::ControllerButtonUp { button, .. } => {
@@ -519,10 +481,6 @@ impl PollState {
 						(0.0, 0.0)
 					};
 					for (axis, value) in [(axis_positive, positive), (axis_negative, negative)] {
-						let was = self.axis_state.get(&axis).copied().unwrap_or(0.0);
-						if was <= 0.5 && value > 0.5 {
-							self.log(&format!("{} pushed", binding_name(&KeyBinding::Axis(axis))));
-						}
 						self.axis_state.insert(axis, value);
 					}
 				}
@@ -552,58 +510,7 @@ impl PollState {
 					.map(|hat| joystick.hat(hat).map_or(0, |hat| hat.to_raw()))
 					.collect(),
 			};
-			if let Some(joy) = &mut self.joys[slot] {
-				if joy.rest.is_empty() {
-					joy.rest.clone_from(&state.axes);
-				}
-			}
-			if self.input_log {
-				self.log_joystick_changes(slot, &state);
-			}
 			self.joy_state[slot] = state;
-		}
-	}
-
-	/// Logs what a wheel or pedal sends, with the binding names to use.
-	fn log_joystick_changes(&self, slot: usize, state: &JoyState) {
-		let last = &self.joy_state[slot];
-		let rest = self.joys[slot]
-			.as_ref()
-			.map_or(&[][..], |joy| &joy.rest[..]);
-		for (axis, &value) in state.axes.iter().enumerate() {
-			let bucket = |v: f32| (v > 0.5) as i8 - (v < -0.5) as i8;
-			let before = last.axes.get(axis).copied().unwrap_or(0.0);
-			if bucket(value) == bucket(before) {
-				continue;
-			}
-			let rest = rest.get(axis).copied().unwrap_or(0.0);
-			let hint = if rest < -0.9 {
-				format!("a pedal resting at -1? use JOY{slot}_AXIS{axis}_FULL")
-			} else if rest > 0.9 {
-				format!("a pedal resting at +1? use JOY{slot}_AXIS{axis}_FULL_INV")
-			} else {
-				format!("steering/stick: JOY{slot}_AXIS{axis}+ and JOY{slot}_AXIS{axis}-")
-			};
-			self.log(&format!("JOY{slot}_AXIS{axis} = {value:.2} ({hint})"));
-		}
-		for (button, &down) in state.buttons.iter().enumerate() {
-			if down && !last.buttons.get(button).copied().unwrap_or(false) {
-				self.log(&format!("JOY{slot}_BUTTON{button} pressed"));
-			}
-		}
-		for (hat, &bits) in state.hats.iter().enumerate() {
-			let before = last.hats.get(hat).copied().unwrap_or(0);
-			for direction in [
-				HatDirection::Up,
-				HatDirection::Right,
-				HatDirection::Down,
-				HatDirection::Left,
-			] {
-				if bits & direction.bit() != 0 && before & direction.bit() == 0 {
-					let name = format!("{direction:?}").to_uppercase();
-					self.log(&format!("JOY{slot}_HAT{hat}_{name} pressed"));
-				}
-			}
 		}
 	}
 
@@ -885,7 +792,7 @@ mod tests {
 		let gear_up = binding("JOY0_BUTTON4");
 		let hat_left = binding("JOY_HAT0_LEFT");
 
-		let mut state = PollState::new(std::ptr::null_mut(), 0.01, true).unwrap();
+		let mut state = PollState::new(std::ptr::null_mut(), 0.01).unwrap();
 		unsafe {
 			let index =
 				SDL_JoystickAttachVirtual(SDL_JoystickType::SDL_JOYSTICK_TYPE_WHEEL, 4, 8, 1);

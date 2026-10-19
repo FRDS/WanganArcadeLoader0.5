@@ -49,9 +49,12 @@ WHEEL_RIGHT = ["D", "SDL_LSTICK_RIGHT"]
 # Put a device number after JOY to use only that device, e.g. JOY1_AXIS2_FULL_INV.
 # Without one, every device counts.
 #
-# To find your wheel's numbers, set input_log = true in config.toml, start the
-# game, turn the wheel and press each pedal and button, then read wal_3dxp.log
-# (Windows) or the terminal (Linux). It lists each device and suggests names.
+# To find your wheel's numbers, read them off the device itself: "Set up USB
+# game controllers" on Windows, or jstest on Linux. SDL numbers axes, buttons
+# and hats in the order the OS presents them, so those numbers are the ones to
+# use here. The loader still names each device it opens in wal_3dxp.log (the
+# terminal on Linux), with its axis, button and hat counts, which is enough to
+# tell JOY0 from JOY1.
 # A typical wheel ends up like this (your axis numbers may differ):
 # WHEEL_LEFT = ["JOY0_AXIS0-"]
 # WHEEL_RIGHT = ["JOY0_AXIS0+"]

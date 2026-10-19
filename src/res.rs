@@ -86,8 +86,8 @@ fn widen(left: f32, right: f32, bottom: f32, top: f32, render_aspect: f32) -> Op
 
 /// Argument sets already reported, so a call the engine makes every frame --
 /// or every sprite -- is logged once. This module is the reason `report.rs`
-/// exists: an early `gl_debug` build without deduplication produced a 70 MB
-/// log in a single run.
+/// exists: an early build that relayed OpenGL debug output undeduplicated
+/// produced a 70 MB log in a single run.
 static REPORTED: report::Reported = report::Reported::new();
 
 fn log_once(line: String) {

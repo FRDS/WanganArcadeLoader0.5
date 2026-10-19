@@ -160,9 +160,9 @@ that SDL has no pad mapping for. Raw bindings are `JOY[<device>]_BUTTON<n>`,
 values the game reads (`n2jvio` wheel/gas/brake words plus floats in the
 input struct).
 
-`input_log = true` in `config.toml` logs every device and every input with
-the binding name to use — this is how a user identifies their wheel's axis
-numbers.
+Each device the loader opens is named in the log with its axis, button and
+hat counts, so `JOY0` can be told from `JOY1`. The numbers within a device
+come from the OS, not from here — there is no per-input tracing any more.
 
 ### The rest
 
@@ -312,13 +312,17 @@ numbers.
   `printCompiledShaders` and `defaultReportLevel` are marked "Debug only" and
   are compiled out of the `Static/Release` build it ships as, so turning them
   on achieves nothing. The loader has to supply the instrumentation, and it is
-  opt-in per subsystem: `cg_log` (shader profile chosen, Cg listings on
-  failure), `file_log` (every file opened; failures always logged),
-  `gl_debug` (an OpenGL debug context relaying the driver's own messages —
-  this is what found the shader bug), `card_log` (every printer command and the
-  status it answered with). Anything logged per-frame or per-draw **must be
-  deduplicated**: an early `gl_debug` build without it produced a 70 MB log in
-  a single run. Use `report.rs` — a `static Reported` per subsystem, which
+  opt-in per subsystem: `card_log` (every printer command and the status it
+  answered with), `car_log` (every car the engine resolves, by id and folder
+  name) and `res_log` (the screen size, viewports and projections). Four more
+  existed and were removed once they had answered: `input_log`, `cg_log`,
+  `file_log` and `gl_debug` — the last of which is what found the shader bug,
+  so an OpenGL debug context is the thing to rebuild first if the world ever
+  comes out wrong again. Failed opens and refused card writes are still
+  reported unconditionally; it is the per-event tracing that is gone. Anything
+  logged per-frame or per-draw **must be deduplicated**: an early build
+  relaying OpenGL debug output without it produced a 70 MB log in a single
+  run. Use `report.rs` — a `static Reported` per subsystem, which
   stops after 64 distinct messages, because deduplicating by text alone never
   repeats for a line carrying an address or a size and so never stops.
 - **Frame rate is game speed.** The engine advances one simulation step per
