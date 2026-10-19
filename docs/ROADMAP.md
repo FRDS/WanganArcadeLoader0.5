@@ -578,6 +578,88 @@ NOPs; reads `plugins/audio.toml` and `plugins/bgms/*`. Port into `src/bgm.rs`
 behind a config flag, keep its file layout so existing packs work, and verify
 expected bytes before writing the NOPs. Credit vixen256.
 
+**Every symbol it needs is present in our Export dump**, checked one by one.
+The two `clV363CardData` and two `clV337Card` names miss, but those are the
+3DX and WM3 card classes and this build is V386, so the version branch that
+wants them is never taken here. One name is not in `main` at all --
+`_ZNSbIwSt11char_traitsIwESaIwEEC1EPKwRKS1_`, the `std::wstring(wchar_t
+const*, allocator const&)` constructor -- and that is fine: it lives in
+`libso/libstdc++.so.6` as a weak symbol and resolves at run time through
+`dlsym` on Linux and LINE's `DlSym` on Windows, which is also how the game's
+own call to it at `0x8541339` is bound.
+
+**The dump carries the whole BGM catalogue in two tables, so nothing needs
+hardcoding.** This is the thing worth knowing before porting: audio_3dxp
+hardcodes three sets of songs with their paths and titles, and all of it can
+be read out of the binary instead, correct for this build by construction.
+
+- **`0x9321260` is `nsAudio`'s BGM table: 111 entries of 12 bytes**, indexed
+  by `emBgmType` 0..110. `+0x00` `const char*` WAV path, `+0x04` `float`
+  relative volume (2.5 for every music entry -- which is all `setRelativeVolume`
+  forces, so that hook is just the table's own value), `+0x08`
+  `const wchar_t*` title *already in the game's "N Name" display form*, e.g.
+  `6 Inexhaustible Energy`. Entry 0 is `data/sound/bgm/maxi1/wm2_05.wav`,
+  which is the path audio_3dxp keys its substitution on; 109 is
+  `/tmp/sys_04.wav` and 110 `data/sound/bgm/test/test_attract.wav`, the
+  `0x6E` that `get_bgm_index` special-cases.
+- **`0x93e3560` is the menu's `int[3][25]`**, read as `table[set * 25 + index]`
+  by `nsMenuCheck::getBgmSelectName`. Slot 0 of each row is 110 (the RANDOM
+  entry), then the songs in menu order, then `-1` to end it. Set 0 is the
+  3DX+/3DX/maxi3 soundtrack (20 songs), set 1 is maxi1+maxi2 (23), set 2 is
+  the rival themes (12). audio_3dxp's hardcoded tables agree with this
+  exactly, in content and in order, so they were read off a running game --
+  but deriving them makes the port smaller and self-checking.
+
+**The version-gated NOP is a clamp, and now has expected bytes.** For this
+build (`W3P`/`EN2`/`B`/rev 2) it is `0x87EF4FC` in
+`clSeqCardDisp9::run`, and the three bytes are `0f 4d c2`, `cmovge eax, edx`
+in:
+
+    movzx  eax, BYTE PTR [ecx]     ; the BGM set
+    mov    edx, 2
+    cmp    al, 3
+    cmovge eax, edx                ; set >= 3 ? 2 : set
+    mov    BYTE PTR [eax+0x16d], dl ; ... into the card
+
+So the game clamps the stored set to at most 2 on its way into the card at
+`+0x16D` -- the same offset audio_3dxp reads and writes -- and NOPing the
+`cmovge` is what lets a custom set index survive. Verify `0f 4d c2` before
+writing.
+
+**Why the plugin has a naked assembly trampoline, and how to avoid it.**
+`clAudioStream::play(emBgmType)` loads `ebx` with `table[id].path`, calls
+`clWaveFile::loadFile(&local, ebx)` to read the header, and then **`fopen`s
+`ebx` again** at `0x8540ff5` to stream the body. `ebx` is callee-saved, so a
+hook on `loadFile` that substitutes a path gets the header from the new file
+and the stream from the old one; the trampoline exists only to force `ebx`
+after the fact. Swapping `0x9321260`'s entry 0 for the duration of the
+original `play` call instead feeds both reads from the table and needs no
+assembly -- and swapping the title pointer with it means `getMusicTitle`
+needs no hook either.
+
+**Assembly is still needed for one thing: the string returns.**
+`nsAudio::getMusicTitle` and `nsMenuCheck::getBgmSelectName` return
+`std::wstring` by value, which on the i386 Itanium ABI means a hidden sret
+pointer as the first argument *that the callee pops* -- both end in
+`ret 0x4`, confirmed at `0x8541345`. audio_3dxp gets this right by accident
+of writing `-> NsAudio`, since Rust's own i686 System V ABI returns every
+struct through sret and emits `ret 4`. **That is a Linux-ABI coincidence and
+must not be relied on for `i686-pc-windows-gnu`**, where the Microsoft cdecl
+rule is that the caller pops the hidden pointer. Hook those two through an
+explicit trampoline that takes the sret pointer as a plain argument and ends
+in `ret 4`, the way `shim/call.c` already handles the other ABI mismatches.
+
+**Dependencies the port does not need.** `rand` (a small PRNG is enough and
+is unit-testable), `widestring` (the titles are NUL-terminated `u32` arrays,
+which is a `Vec<u32>`) and `glob` on Windows, where it is a Linux-only
+dependency today and `std::fs::read_dir` does the job. `hook.rs` drops out
+entirely: it is `hook::hook_symbol` and `platform::write_memory` already.
+
+**And every call into the game must go through `call_game`.** audio_3dxp
+calls its trampolines directly, which is correct on Linux and faults in SSE
+code on Windows. That is the single most mechanical part of the port and the
+easiest to half-finish.
+
 ### P6 — Gemballa unlock (from tattoohanz's Gemballa-Unlocker)
 
 Extracted from the PyInstaller bundle the user supplied. Two halves:
