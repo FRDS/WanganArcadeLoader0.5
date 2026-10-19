@@ -71,7 +71,9 @@ struct Song {
 	path: std::ffi::CString,
 	/// The title as the game stores them: NUL-terminated 4-byte `wchar_t`.
 	title: Vec<u32>,
-	/// The title as text, for matching `stories` entries and for the log.
+	/// The song's own name, with no number in front of it: what a pack's
+	/// `stories` list names, and what the log reports. A native song keeps the
+	/// game's numbered title here, since nothing ever matches against those.
 	name: String,
 }
 
@@ -301,11 +303,11 @@ unsafe fn packs() -> Vec<Set> {
 			// Numbered by what has loaded rather than by position in the
 			// file, so a song whose file is missing does not leave a gap in
 			// the list the player sees.
-			let (title, text) = wide_title(songs.len(), &song.name);
+			let (title, _) = wide_title(songs.len(), &song.name);
 			songs.push(Song {
 				path: std::ffi::CString::new(path.to_string_lossy().as_ref()).unwrap_or_default(),
 				title,
-				name: text,
+				name: song.name.clone(),
 			});
 		}
 		if songs.is_empty() {
@@ -592,7 +594,7 @@ unsafe extern "C" fn story_bgm(episode: *mut c_int, a2: c_int, set: c_int) -> c_
 	let found = wanted.and_then(|wanted| {
 		pack.songs
 			.iter()
-			.position(|song| song.name.ends_with(wanted.as_str()))
+			.position(|song| song.name == *wanted)
 	});
 	match found {
 		Some(index) => encode(set, index as i32 + 1),
@@ -736,6 +738,22 @@ mod tests {
 		assert_eq!(*wide.last().unwrap(), 0, "the title is not NUL-terminated");
 		assert_eq!(wide.len(), text.chars().count() + 1);
 		assert_eq!(wide_title(19, "Phantom of Blue").1, "20 Phantom of Blue");
+	}
+
+	/// A story episode names a song by its own name, and the match has to be
+	/// exact. The packs we have include "Love And Gold" beside "Silver And
+	/// Gold", so a suffix match picks whichever came first in the file.
+	#[test]
+	fn a_story_song_is_matched_whole_and_not_by_its_tail() {
+		let names = ["Gold", "Love And Gold", "Silver And Gold", "Move On"];
+		let find = |wanted: &str| names.iter().position(|name| *name == wanted);
+		assert_eq!(find("Silver And Gold"), Some(2));
+		assert_eq!(find("Gold"), Some(0));
+		// What the old suffix match did with the same list.
+		let tail = |wanted: &str| names.iter().position(|name| name.ends_with(wanted));
+		assert_eq!(tail("Silver And Gold"), Some(2));
+		assert_eq!(tail("Gold"), Some(0), "a bare suffix is ambiguous either way");
+		assert_ne!(tail("And Gold"), find("And Gold"));
 	}
 
 	/// The scratch entry has to be inside the table, since its address is
