@@ -80,6 +80,11 @@ struct Song {
 struct Set {
 	name: String,
 	image: Option<std::ffi::CString>,
+	/// The card screen's own artwork, one per state: selected, dimmed and
+	/// dark. A pack that supplies only `mod_card.png` gets it in all three;
+	/// a pack with none falls back to its `mod.png`, which is the wrong shape
+	/// for the slot but better than the set it is standing in for.
+	card: [Option<std::ffi::CString>; 3],
 	songs: Vec<Song>,
 	/// Song names to play in each story episode, by episode number.
 	stories: Option<Vec<String>>,
@@ -218,6 +223,7 @@ unsafe fn native_sets() -> Vec<Set> {
 			// `audio_3dxp` names in `audio.toml`.
 			name: ["3", "2", "R"][index].to_string(),
 			image: None,
+			card: [None, None, None],
 			songs,
 			stories: None,
 		});
@@ -315,12 +321,21 @@ unsafe fn packs() -> Vec<Set> {
 			continue;
 		}
 		platform::log(&format!("bgm: {name}, {} song(s)", songs.len()));
+		let as_c = |path: std::path::PathBuf| {
+			path.is_file()
+				.then(|| std::ffi::CString::new(path.to_string_lossy().as_ref()).ok())
+				.flatten()
+		};
+		let card_any = as_c(folder.join("mod_card.png"));
+		let card = [
+			card_any.clone(),
+			as_c(folder.join("mod_card_light.png")).or_else(|| card_any.clone()),
+			as_c(folder.join("mod_card_dark.png")).or_else(|| card_any.clone()),
+		];
 		sets.push(Set {
 			name,
-			image: image
-				.is_file()
-				.then(|| std::ffi::CString::new(image.to_string_lossy().as_ref()).ok())
-				.flatten(),
+			card,
+			image: as_c(image),
 			songs,
 			stories: pack.stories,
 		});
@@ -837,18 +852,20 @@ unsafe fn aim_logo(set: i32) {
 		return;
 	}
 	LOGO_SET = set;
-	let image = SETS.get(set as usize).and_then(|set| set.image.as_ref());
-	let Some(image) = image else {
-		for (desc, original) in LOGO_DESCS.iter().zip(LOGO_ORIGINAL.iter()) {
-			platform::write_memory(*desc as *mut (), original);
-		}
+	let Some(pack) = SETS.get(set as usize) else {
 		return;
 	};
-	let pointer = image.as_ptr() as usize as u32;
-	let size = png_size(image);
-	for desc in LOGO_DESCS {
-		platform::write_memory(desc as *mut (), &pointer.to_le_bytes());
-		if let Some((width, height)) = size {
+	for (state, desc) in LOGO_DESCS.iter().enumerate() {
+		// Each state separately, so a pack that drew its own dimmed plate
+		// gets dimmed with the rest of the strip rather than staying lit.
+		let art = pack.card[state].as_ref().or(pack.image.as_ref());
+		let Some(art) = art else {
+			platform::write_memory(*desc as *mut (), &LOGO_ORIGINAL[state]);
+			continue;
+		};
+		let pointer = art.as_ptr() as usize as u32;
+		platform::write_memory(*desc as *mut (), &pointer.to_le_bytes());
+		if let Some((width, height)) = png_size(art) {
 			for offset in [LOGO_WIDTH, LOGO_WIDTH2] {
 				platform::write_memory((desc + offset) as *mut (), &(width as f32).to_le_bytes());
 			}
@@ -856,10 +873,15 @@ unsafe fn aim_logo(set: i32) {
 				platform::write_memory((desc + offset) as *mut (), &(height as f32).to_le_bytes());
 			}
 		}
+		say_card_art(state, art);
 	}
-	platform::log(&format!(
-		"bgm: the card screen's first sound plate now draws {}",
-		image.to_string_lossy()
+}
+
+/// Logged once per state, through the module's own budget.
+fn say_card_art(state: usize, art: &CStr) {
+	REPORTED.say(format!(
+		"bgm: the card screen's first sound plate, state {state}, now draws {}",
+		art.to_string_lossy()
 	));
 }
 
