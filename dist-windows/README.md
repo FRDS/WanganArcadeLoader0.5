@@ -96,6 +96,25 @@ bindings (`JOY_AXIS…`, `JOY_BUTTON…`; the list is at the bottom of
 `config.toml` works as on Linux. Missing keys use their defaults. Differences
 on Windows:
 
+- `custom_bgm` (default `false`): adds your own race music. Each folder in
+  `plugins/bgms` holding a `mod.toml` and a `mod.png` becomes another set in
+  the BGM select screen, next to the three the game ships, and
+  `plugins/audio.toml` says which set your card uses — `bgm = "<folder
+  name>"`. A `mod.toml` lists the songs:
+
+  ```toml
+  [[song]]
+  name = "Shown in the list"
+  file = "track01.wav"
+  ```
+
+  Songs are WAV, the same as the game's own under `data/sound/bgm`. Add
+  `stories = ["...", "..."]` to choose what each story episode plays, one
+  name per episode; without it story mode picks from the pack at random. The
+  set your card carries is masked back to what it really held before anything
+  writes it, so a card never records a set a cabinet would read as something
+  else. This is a port of vixen256's `audio_3dxp` and reads its file layout,
+  so packs made for that plugin work here unchanged.
 - `card_log` (default `false`): logs every command the game sends the card
   reader, its payload size and the status the emulation answers with. Turn this
   on if the title screen says the card reader isn't functional, if a save
@@ -148,7 +167,9 @@ on Windows:
   worth doing if your driver reports support it doesn't honour. Whatever it
   decides, it says so in `wal_3dxp.log`.
 - Networking stays off unless `local_ip` is set.
-- The `plugins/` folder isn't supported on Windows yet.
+- Loadable `plugins/*.so` aren't supported on Windows. The BGM packs under
+  `plugins/bgms` are read either way, since `custom_bgm` is built in rather
+  than a plugin.
 
 ## Laptops with two GPUs
 

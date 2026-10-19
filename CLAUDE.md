@@ -215,6 +215,22 @@ come from the OS, not from here — there is no per-input tracing any more.
 - `report.rs` — `Reported::say`, which logs a line once and then goes quiet
   after 64 distinct ones. Anything on a per-frame or per-draw path goes
   through one of these; see the dedup gotcha below.
+- `bgm.rs` — custom race music, a built-in port of vixen256's `audio_3dxp`
+  (GPLv3), behind `custom_bgm`. Every song, the game's own included, is played
+  through entry 0 of `nsAudio`'s table at `0x9321260`: the path and title
+  pointers are written there and `clAudioStream::play` is called with id 0,
+  because that function keeps the path in `ebx` across `clWaveFile::loadFile`
+  and `fopen`s it again, so substituting inside `loadFile` would read the
+  header from one file and the audio from another. Leaving entry 0 pointing at
+  what is playing is also why `getMusicTitle` needs no hook. The three native
+  sets are read out of the dump rather than hardcoded —
+  `0x9321260` for paths and titles, the `int[3][25]` at `0x93e3560` for which
+  ids each set holds — so they are this build's. `docs/ROADMAP.md` has the
+  table layouts. **The two `std::wstring` returns need a naked trampoline**:
+  they take a hidden sret pointer *the callee pops* (`ret 0x4`), and Rust
+  matches that only on i686 System V — measured, the Windows target returns
+  the struct in `eax` with a plain `ret`, so relying on it would corrupt the
+  caller's stack by four bytes a call.
 - `al.rs` — redirects 69 OpenAL entry points to the system OpenAL.
 - `shader.rs` — makes `data/shader` suit the machine before the engine reads
   it. Each compiled program declares what it needs in its own `OPTION NV_*;`
@@ -274,7 +290,9 @@ come from the OS, not from here — there is no per-input tracing any more.
   would mean redistributing the game's own assets, which this project doesn't
   do.
 - Formatting is **hard tabs** (`rustfmt.toml`), matching upstream.
-- The Windows build has no `plugins/` support. `file_redirect` and
+- The Windows build has no `plugins/*.so` loading. It still *reads*
+  `plugins/bgms` and `plugins/audio.toml`, because `bgm.rs` is a built-in
+  port of a plugin and keeps that layout. `file_redirect` and
   `ignore_custom_ioctls` now work on both: `windows/files.rs` hooks LINE's
   `open`/`open64`/`fopen` stubs and `windows/ioctl.rs` its `ioctl` stub. Note
   LINE already rewrites `/tmp/...` to `./tmp/...` itself, so don't add that

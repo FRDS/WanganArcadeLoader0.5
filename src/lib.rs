@@ -7,6 +7,7 @@ use std::str::FromStr;
 
 pub mod adm;
 pub mod al;
+pub mod bgm;
 pub mod card;
 pub mod carparts;
 pub mod elfsym;
@@ -77,6 +78,12 @@ pub struct Config {
 	/// and showing world where the stretch used to be. A no-op at 4:3. Turn it
 	/// off to get the old behaviour without giving up the resolution.
 	widescreen_hud: bool,
+
+	/// Add the BGM packs in `plugins/bgms` to the BGM select screen, each
+	/// folder as another set beside the three the game ships. Ported from
+	/// vixen256's `audio_3dxp`, and reads its file layout, so packs made for
+	/// that plugin work unchanged.
+	custom_bgm: bool,
 
 	/// Unlock the GEMBALLA maker, which the Export build hides, and put story
 	/// chara 30 back in the Gemballa 964 RSR. Applied in memory, never to
@@ -155,6 +162,7 @@ const fn default_config() -> Config {
 		height: 480,
 		widescreen_hud: true,
 		widescreen_anchor: false,
+		custom_bgm: false,
 		gemballa: false,
 		file_redirect: None,
 		vsync: true,
@@ -618,6 +626,7 @@ pub(crate) unsafe fn init() {
 	hud::init();
 	carparts::init();
 	gemballa::init();
+	bgm::init();
 
 	platform::load_plugins(&GAME_VERSION);
 }

@@ -21,6 +21,28 @@ widescreen_hud = true
 # and it has been measured against the in-race HUD rather than every screen.
 widescreen_anchor = false
 
+# Add your own race music. Every folder in plugins/bgms that holds a mod.toml
+# and a mod.png becomes another set in the BGM select screen, beside the three
+# the game ships, and plugins/audio.toml picks which one a card uses:
+#
+#   plugins/audio.toml      bgm = "<folder name>"
+#   plugins/bgms/<name>/mod.toml
+#       [[song]]
+#       name = "Shown in the list"
+#       file = "track01.wav"
+#   plugins/bgms/<name>/mod.png     the logo shown beside the set
+#
+# Songs are WAV, like the game's own under data/sound/bgm. A pack can also add
+#   stories = ["song name for episode 0", "... episode 1", ...]
+# to pick what each story episode plays; without it, story mode picks at
+# random from the pack. The set a card ends up carrying is masked back to what
+# the card really held before it is written, so a card never records a set an
+# arcade cabinet would read as something else.
+#
+# Ported from vixen256's audio_3dxp, and reads its file layout, so packs made
+# for that plugin work unchanged.
+custom_bgm = false
+
 # Unlock the GEMBALLA maker, which the Export build hides, and put the story
 # rival who drives the 964 RSR back in it. Applied in memory only -- `main` on
 # disk is never touched -- and only if the bytes at every offset are what this
