@@ -652,10 +652,18 @@ const WRAP_UP: usize = 0x087E_FD1A;
 /// `cmp eax,0x2; jne` -- the wrap test on the way down.
 const WRAP_DOWN: usize = 0x087E_FEDF;
 
-/// Sprite descriptor for `menu_p_sound_logo_maxi3.png`, id `0x1652`, in the
+/// Sprite descriptor for `menu_p_card_8_sound_1_3.png`, id `0x1599`, in the
 /// table `clMain` hands to `clImageResourceManager::create`. 44 bytes:
 /// `{ const char *path, int, int, int, float w, h, sx, sy, w2, h2, int }`.
-const LOGO_DESC: usize = 0x0959_80B8;
+///
+/// **The card screen has its own artwork**, nothing to do with the pre-race
+/// logos: `menu_p_card_8_sound_<set>_<state>.png`, ids `0x1597`..`0x159f`, a
+/// 3x3 grid of the three sets against the three unlock states, at 128x64.
+/// This is set 1 in state 3 -- the maxi3 soundtrack on a fully unlocked row,
+/// which is the frame a custom set borrows. Pointing the pre-race logo's
+/// descriptor here instead, as this first did, could never have worked: that
+/// one is reached through `igImage::load`, which this screen never calls.
+const LOGO_DESC: usize = 0x0959_60EC;
 const LOGO_WIDTH: usize = 0x10;
 const LOGO_HEIGHT: usize = 0x14;
 const LOGO_WIDTH2: usize = 0x20;
@@ -665,12 +673,38 @@ const LOGO_BYTES: usize = 0x2c;
 /// Row 1 of the card screen: the value, and the sprite that illustrates it.
 const ROW_VALUE: usize = 0x48;
 const ROW_SPRITE: usize = 0x24;
-/// The sound plate, and the 59-frame block each set shows of it.
-const SOUND_ANM: c_int = 6;
-const SOUND_FRAMES: c_int = 0x3b;
-/// The block a custom set borrows -- the third, which only the unlocked
-/// artwork has.
-const BORROWED_BLOCK: c_int = 200;
+/// The rest of the row's state, read only to report it: the cursor's row, the
+/// unlock count the patches force, the limit they set, and the title sprite
+/// -- which nothing here writes, so a blank title means the row was never
+/// drawn rather than that the value was wrong.
+const CURSOR_ROW: usize = 0x40;
+const UNLOCK_COUNT: usize = 0x68;
+const ROW_LIMIT: usize = 0x60;
+const ROW_TITLE: usize = 0x30;
+/// How the row draws itself, which is not what it first looked like.
+///
+/// `ANM` is a **playback mode**, not a slot: mode 6 loops a block of frames
+/// (what the row does while the cursor sits on it) and mode 1 shows a single
+/// frame (what it shows the rest of the time). The resting display is one
+/// frame at `STATIC_FRAME + set`, and the blocks at 0, 100 and 200 are the
+/// animated version.
+///
+/// Which plate those frames come from is chosen from the unlock count too --
+/// `0xa2` locked, `0xa1` part-unlocked, `0xa0` full -- and that choice is
+/// made *before* `run` computes the count the patches force. So the row was
+/// holding `menu_g_cardcheck_8_sound_sel_no`, all 32 KB of it, and being
+/// asked for frame 260: out of range, nothing drawn, for every set including
+/// the game's own three. Loading the full plate is the other half of the
+/// patch, and it is why forcing the unlock count alone drew nothing.
+const SOUND_PLATE: c_int = 0xa0;
+const PLATE_MODE: c_int = 6;
+const FRAME_MODE: c_int = 1;
+/// Frame `0x104 + set` is the resting display once the row is unlocked.
+/// `menu_g_cardcheck_8_sound_sel.anm` holds 263 frames, so the three the game
+/// ships land on 260, 261 and 262 and there is nothing past them.
+const STATIC_FRAME: c_int = 0x104;
+/// So a custom set borrows the first one, whose artwork `LOGO_DESC` replaces.
+const BORROWED_SET: c_int = 0;
 
 /// One verified in-memory edit.
 ///
@@ -801,6 +835,7 @@ unsafe fn aim_logo(set: i32) {
 }
 
 static mut SET_ANIME: *const () = std::ptr::null();
+static mut LOAD_ANIME: *const () = std::ptr::null();
 /// The row value the screen last showed, so the choice is written out once
 /// per change rather than once per frame.
 static mut ROW_SHOWN: i32 = -1;
@@ -815,27 +850,44 @@ unsafe fn row_changed(this: *mut c_void) {
 	if this.is_null() {
 		return;
 	}
-	let value = (this as *const u8).add(ROW_VALUE).cast::<c_int>().read();
+	let field = |offset: usize| (this as *const u8).add(offset).cast::<c_int>().read();
+	let value = field(ROW_VALUE);
+	// Deduplicated, so this is a handful of lines over a whole session: one
+	// per distinct state the row is in. It is the only way to tell "the patch
+	// did not take" from "the patch took and the row still draws nothing".
+	REPORTED.say(format!(
+		"bgm: card row 1 = set {value}, unlock {}, limit {}, cursor on row {}, value sprite 		 {:#x}, title sprite {:#x}",
+		field(UNLOCK_COUNT),
+		field(ROW_LIMIT),
+		field(CURSOR_ROW),
+		field(ROW_SPRITE),
+		field(ROW_TITLE),
+	));
 	if value < 0 || value as usize >= SETS.len() {
 		return;
 	}
 	SHOWN_SET = value;
 	aim_logo(value);
 
-	// For a set the dispatch knows, the game has already chosen the block.
-	// Past it there was no call at all, so the sprite is still showing the
-	// frames of whatever was selected before.
-	if value as usize >= MENU_SETS && !SET_ANIME.is_null() {
-		let sprite = (this as *const u8)
-			.add(ROW_SPRITE)
-			.cast::<*mut c_void>()
-			.read();
-		if !sprite.is_null() {
-			call_game::<_, ()>(
-				SET_ANIME,
-				(sprite, SOUND_ANM, BORROWED_BLOCK, SOUND_FRAMES, 1),
-			);
-		}
+	// Draw the row ourselves, every time and for every set -- not just for
+	// the ones the game's dispatch does not know about. The game picks the
+	// plate from the unlock count before the patched value exists, so left
+	// alone it asks the locked plate for a frame that is not in it and the
+	// row comes out blank whatever is selected.
+	let sprite = (this as *const u8)
+		.add(ROW_SPRITE)
+		.cast::<*mut c_void>()
+		.read();
+	if !sprite.is_null() && !SET_ANIME.is_null() && !LOAD_ANIME.is_null() {
+		call_game::<_, ()>(LOAD_ANIME, (sprite, SOUND_PLATE, PLATE_MODE, 0, 0, 1));
+		// A custom set has no frame of its own, so it borrows the first and
+		// `aim_logo` has repointed what that frame draws.
+		let frame = if (value as usize) < MENU_SETS {
+			value
+		} else {
+			BORROWED_SET
+		};
+		call_game::<_, ()>(SET_ANIME, (sprite, FRAME_MODE, STATIC_FRAME + frame, 1, 1));
 	}
 
 	if ROW_SHOWN != value {
@@ -914,10 +966,9 @@ unsafe fn install_selector() {
 	LOGO_SAVED = LOGO_ORIGINAL.iter().any(|byte| *byte != 0);
 
 	SET_ANIME = hook::get_symbol("_ZN13clSpriteAnime8setAnimeE3ANMiii") as *const ();
-	if SET_ANIME.is_null() {
-		platform::log(
-			"bgm: clSpriteAnime::setAnime is missing, so a custom set's plate will be stale",
-		);
+	LOAD_ANIME = hook::get_symbol("_ZN13clSpriteAnime8setAnimeEi3ANMiii") as *const ();
+	if SET_ANIME.is_null() || LOAD_ANIME.is_null() {
+		platform::log("bgm: clSpriteAnime::setAnime is missing, so the BGM row will stay blank");
 	}
 	ORIGINAL_AN_RESET = hook::hook_symbol("_ZN14clSeqCardDisp98an_resetEv", an_reset as *const ());
 	ORIGINAL_INIT_ANIME =
@@ -1205,6 +1256,23 @@ mod tests {
 			assert!(offset + 4 <= LOGO_BYTES, "{offset:#x} runs off the entry");
 		}
 		assert_eq!(LOGO_BYTES, 0x2c);
+	}
+
+	/// The three sets the game ships rest on frames 260, 261 and 262 of a
+	/// 263-frame plate, so a custom set has to borrow one rather than index
+	/// past the end -- which is what drawing nothing looked like.
+	#[test]
+	fn a_custom_set_borrows_a_frame_that_exists() {
+		const FRAMES_IN_THE_PLATE: c_int = 263;
+		for set in 0..MENU_SETS as c_int {
+			assert!(STATIC_FRAME + set < FRAMES_IN_THE_PLATE);
+		}
+		assert_eq!(
+			STATIC_FRAME + MENU_SETS as c_int,
+			FRAMES_IN_THE_PLATE,
+			"the first set with no frame of its own is the one past the end"
+		);
+		assert!(STATIC_FRAME + BORROWED_SET < FRAMES_IN_THE_PLATE);
 	}
 
 	/// What the engine samples with comes out of this, so anything that is
