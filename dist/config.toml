@@ -42,7 +42,16 @@ widescreen_anchor = false
 # Ported from vixen256's audio_3dxp, and reads its file layout, so packs made
 # for that plugin work unchanged.
 custom_bgm = false
-
+# Let the card screen's BGM row reach your packs, so a set can be chosen in
+# game instead of only here. Needs custom_bgm, and does nothing without a
+# pack. Turn the row to the right past the three sets the game ships and it
+# keeps going into yours, wrapping round at either end; the choice is written
+# back to plugins/audio.toml, so it survives a restart. This rewrites a little
+# of the game's code in memory -- the row's limit is an unlock count and its
+# ends are hardcoded comparisons, so there is nothing to hook -- and every
+# edit is checked against the bytes it expects first, declining the lot and
+# saying so if anything does not match.
+bgm_selector = true
 # Unlock the GEMBALLA maker, which the Export build hides, and put the story
 # rival who drives the 964 RSR back in it. Applied in memory only -- `main` on
 # disk is never touched -- and only if the bytes at every offset are what this

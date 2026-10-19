@@ -230,7 +230,15 @@ come from the OS, not from here — there is no per-input tracing any more.
   they take a hidden sret pointer *the callee pops* (`ret 0x4`), and Rust
   matches that only on i686 System V — measured, the Windows target returns
   the struct in `eax` with a plain `ret`, so relying on it would corrupt the
-  caller's stack by four bytes a call.
+  caller's stack by four bytes a call. Under `bgm_selector` it also widens
+  the card screen's own BGM row to reach the packs, which needs verified
+  byte patches rather than hooks: the row's limit is an unlock count and
+  its ends are hardcoded comparisons. `docs/ROADMAP.md` has the addresses
+  and the two things still unproven. Two findings from that work are worth
+  knowing before touching any menu — **`clMenuInput::chkSW` is the one
+  funnel all 295 menu button reads go through**, and **its cursor is the
+  steering wheel, left and right only, so this game's menus have no up or
+  down**.
 - `al.rs` — redirects 69 OpenAL entry points to the system OpenAL.
 - `shader.rs` — makes `data/shader` suit the machine before the engine reads
   it. Each compiled program declares what it needs in its own `OPTION NV_*;`

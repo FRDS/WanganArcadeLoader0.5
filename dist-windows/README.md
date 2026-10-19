@@ -115,7 +115,16 @@ on Windows:
   writes it, so a card never records a set a cabinet would read as something
   else. This is a port of vixen256's `audio_3dxp` and reads its file layout,
   so packs made for that plugin work here unchanged.
-- `card_log` (default `false`): logs every command the game sends the card
+- `bgm_selector` (default `true`, needs `custom_bgm`): lets the card screen's
+  BGM row reach your packs, so you can pick a set in game rather than editing
+  `plugins/audio.toml`. On the card check screen, move the cursor to the SOUND
+  row with the intrude button and turn the wheel: past the three sets the game
+  ships it carries on into your packs and wraps round at either end, showing
+  each pack's `mod.png` where the maxi logo sits. Whatever you leave it on is
+  written back to `plugins/audio.toml`, so it survives a restart. Normally the
+  row is locked unless your card has unlocked it, and it only ever offered
+  three sets; this rewrites those limits in memory, checking the bytes it
+  expects first and leaving everything alone if they do not match.- `card_log` (default `false`): logs every command the game sends the card
   reader, its payload size and the status the emulation answers with. Turn this
   on if the title screen says the card reader isn't functional, if a save
   doesn't stick, or if anything card-shaped goes wrong at the end of a race —

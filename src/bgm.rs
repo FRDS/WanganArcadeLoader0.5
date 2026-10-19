@@ -571,6 +571,326 @@ unsafe extern "C" fn card_save(data: *mut u8, a2: bool, a3: *const u8) -> *const
 	result
 }
 
+// ----------------------------------------------- the card screen's selector
+//
+// Card check page 8 (`clSeqCardDisp9`) is a three-row settings editor, and
+// row 1 is the BGM set: value at `[this+0x48]`, maximum at `[this+0x60]`,
+// artwork on the `clSpriteAnime` at `[this+0x24]`. The cursor row is
+// `[this+0x40]`, moved with the intrude button; the value is changed with the
+// shifter left and right through `clMenuInput::chkSW` -- the one funnel every
+// menu in this game reads buttons through, and which only ever produces left,
+// right and four buttons. There is no up or down anywhere in these menus.
+//
+// Three things stand between that selector and a custom set.
+//
+// **The maximum is an unlock count.** `run` recomputes it on every pass, so
+// writing the field from a hook would be overwritten; the gate is patched
+// instead. `[this+0x68]` is set to 0, then 1 if `card+0x279` is set, then 2
+// if `card+0x186` is set, and the result reaches `[this+0x60]` through a
+// three-way dispatch. Forcing both lower writes to 2 makes every path take
+// the `== 2` branch -- which is also the branch that loads the full
+// `menu_g_cardcheck_8_sound_sel` plate rather than the cut-down or locked
+// ones, so one change unlocks the row *and* gives it artwork with room for
+// three blocks of frames. Only that branch's store then needs the real count.
+//
+// **Row 1 clamps.** Only row 2 wraps, and the test is the row index against
+// 2 in both directions. Making it "row >= 1" lets row 1 wrap too, which
+// matters more with seven sets than it did with three.
+//
+// **The artwork is frame blocks, not images.** Each set shows 59 frames of
+// one `.anm` -- start 0, 100 or 200 -- and for a set index of 3 or more the
+// dispatch makes no call at all, leaving whatever frame was there. So a
+// custom set borrows the third block, and the *sprite descriptor* that block
+// draws from is pointed at the pack's own image. Note what this is not: the
+// card screen never goes through `Gap::Gfx::igImage::load`, so the hook that
+// substitutes the pre-race logo cannot reach it. Sprites here resolve through
+// `clImageResourceManager` from ids compiled into the `.anm`, and the
+// descriptor table is the only place a path can be changed.
+
+/// `mov DWORD PTR [esi+0x68],0x0` -- the unlock count before either card byte
+/// is consulted.
+const GATE_ZERO: usize = 0x087E_F16C;
+/// `mov DWORD PTR [esi+0x68],0x1` -- the one-unlock case.
+const GATE_ONE: usize = 0x087E_F192;
+/// `mov DWORD PTR [esi+0x60],0x2` -- row 1's maximum, on the branch every
+/// path takes once the gate is forced.
+const ROW_MAX: usize = 0x087E_F936;
+/// `cmp edx,0x2; jne` -- the wrap test on the way up.
+const WRAP_UP: usize = 0x087E_FD1A;
+/// `cmp eax,0x2; jne` -- the wrap test on the way down.
+const WRAP_DOWN: usize = 0x087E_FEDF;
+
+/// Sprite descriptor for `menu_p_sound_logo_maxi3.png`, id `0x1652`, in the
+/// table `clMain` hands to `clImageResourceManager::create`. 44 bytes:
+/// `{ const char *path, int, int, int, float w, h, sx, sy, w2, h2, int }`.
+const LOGO_DESC: usize = 0x0959_80B8;
+const LOGO_WIDTH: usize = 0x10;
+const LOGO_HEIGHT: usize = 0x14;
+const LOGO_WIDTH2: usize = 0x20;
+const LOGO_HEIGHT2: usize = 0x24;
+const LOGO_BYTES: usize = 0x2c;
+
+/// Row 1 of the card screen: the value, and the sprite that illustrates it.
+const ROW_VALUE: usize = 0x48;
+const ROW_SPRITE: usize = 0x24;
+/// The sound plate, and the 59-frame block each set shows of it.
+const SOUND_ANM: c_int = 6;
+const SOUND_FRAMES: c_int = 0x3b;
+/// The block a custom set borrows -- the third, which only the unlocked
+/// artwork has.
+const BORROWED_BLOCK: c_int = 200;
+
+/// One verified in-memory edit.
+///
+/// Absolute addresses, because this module works in them throughout: `main`
+/// is `ET_EXEC` and not position-independent, so a link address is a runtime
+/// address.
+struct Edit {
+	at: usize,
+	expect: &'static [u8],
+	write: &'static [u8],
+	what: &'static str,
+}
+
+/// The edits that make the row reach past three sets -- everything except the
+/// maximum itself, which depends on how many packs loaded.
+const SELECTOR: [Edit; 4] = [
+	Edit {
+		at: GATE_ZERO,
+		expect: &[0xc7, 0x46, 0x68, 0x00, 0x00, 0x00, 0x00],
+		write: &[0xc7, 0x46, 0x68, 0x02, 0x00, 0x00, 0x00],
+		what: "the BGM row starts unlocked rather than locked",
+	},
+	Edit {
+		at: GATE_ONE,
+		expect: &[0xc7, 0x46, 0x68, 0x01, 0x00, 0x00, 0x00],
+		write: &[0xc7, 0x46, 0x68, 0x02, 0x00, 0x00, 0x00],
+		what: "a part-unlocked card gets the whole row, not two thirds of it",
+	},
+	Edit {
+		at: WRAP_UP,
+		expect: &[0x83, 0xfa, 0x02, 0x0f, 0x85],
+		write: &[0x83, 0xfa, 0x01, 0x0f, 0x8c],
+		what: "the BGM row wraps to the first set instead of stopping",
+	},
+	Edit {
+		at: WRAP_DOWN,
+		expect: &[0x83, 0xf8, 0x02, 0x0f, 0x85],
+		write: &[0x83, 0xf8, 0x01, 0x0f, 0x8c],
+		what: "the BGM row wraps to the last set instead of stopping",
+	},
+];
+
+/// Applies a set of edits, or none of them.
+///
+/// A half-applied set is worse than none here: a row that scrolls to a set it
+/// cannot draw, or draws one it cannot store, is harder to diagnose than a
+/// row that never changed. Each write is read back, because a page the loader
+/// cannot make writable would otherwise look exactly like an edit that works
+/// and is ignored.
+unsafe fn apply(edits: &[Edit], name: &str) -> bool {
+	let found = |edit: &Edit| std::slice::from_raw_parts(edit.at as *const u8, edit.expect.len());
+	if let Some(wrong) = edits.iter().find(|edit| found(edit) != edit.expect) {
+		platform::log(&format!(
+			"bgm: not patching {name} -- {:#x} holds {:02x?}, not {:02x?}",
+			wrong.at,
+			found(wrong),
+			wrong.expect
+		));
+		return false;
+	}
+	for edit in edits {
+		platform::write_memory(edit.at as *mut (), edit.write);
+		if found(edit) == edit.write {
+			platform::log(&format!("bgm: {}", edit.what));
+		} else {
+			platform::log(&format!("bgm: write did not stick at {:#x}", edit.at));
+		}
+	}
+	true
+}
+
+/// A PNG's pixel size out of its IHDR, as bytes.
+///
+/// Split out from the file read so the parse itself is testable: a header
+/// that is not a PNG, or is truncated, has to answer None rather than a size
+/// the engine would then sample with.
+fn png_size_of(bytes: &[u8]) -> Option<(u32, u32)> {
+	if bytes.len() < 24 || &bytes[1..4] != b"PNG" || &bytes[12..16] != b"IHDR" {
+		return None;
+	}
+	let at = |offset: usize| -> Option<u32> {
+		Some(u32::from_be_bytes(bytes[offset..offset + 4].try_into().ok()?))
+	};
+	let (width, height) = (at(16)?, at(20)?);
+	// A zero dimension would make the descriptor sample nothing at all.
+	(width > 0 && height > 0).then_some((width, height))
+}
+
+/// A PNG's pixel size, straight out of its IHDR.
+///
+/// The descriptor carries the image's dimensions and the engine samples with
+/// them, so a pack's 192x32 image left behind a 256x32 descriptor would come
+/// out stretched. Reading the real size costs 24 bytes of file.
+fn png_size(path: &CStr) -> Option<(u32, u32)> {
+	png_size_of(&std::fs::read(path.to_str().ok()?).ok()?)
+}
+/// The descriptor as it shipped, so a native set gets its own logo back.
+static mut LOGO_ORIGINAL: [u8; LOGO_BYTES] = [0; LOGO_BYTES];
+static mut LOGO_SAVED: bool = false;
+/// Which set the descriptor points at, so it is only rewritten on a change.
+static mut LOGO_SET: i32 = -1;
+
+/// Points the borrowed block's descriptor at `set`'s own image, or back at
+/// the logo it shipped with.
+unsafe fn aim_logo(set: i32) {
+	if !LOGO_SAVED || LOGO_SET == set {
+		return;
+	}
+	LOGO_SET = set;
+	let Some(image) = SETS.get(set as usize).and_then(|set| set.image.as_ref()) else {
+		platform::write_memory(LOGO_DESC as *mut (), &LOGO_ORIGINAL);
+		return;
+	};
+	let pointer = image.as_ptr() as usize as u32;
+	platform::write_memory(LOGO_DESC as *mut (), &pointer.to_le_bytes());
+	if let Some((width, height)) = png_size(image) {
+		for offset in [LOGO_WIDTH, LOGO_WIDTH2] {
+			platform::write_memory((LOGO_DESC + offset) as *mut (), &(width as f32).to_le_bytes());
+		}
+		for offset in [LOGO_HEIGHT, LOGO_HEIGHT2] {
+			platform::write_memory((LOGO_DESC + offset) as *mut (), &(height as f32).to_le_bytes());
+		}
+	}
+	REPORTED.say(format!(
+		"bgm: the card screen's sound plate now draws {}",
+		image.to_string_lossy()
+	));
+}
+
+static mut SET_ANIME: *const () = std::ptr::null();
+/// The row value the screen last showed, so the choice is written out once
+/// per change rather than once per frame.
+static mut ROW_SHOWN: i32 = -1;
+
+/// Brings the BGM row in line with a set the screen was never built to draw,
+/// and remembers the choice.
+///
+/// Called from both of the screen's animation entry points, after the game's
+/// own work: `an_reset` runs on every cursor move and value change, and
+/// `initAnime` on the first draw, which `an_reset` does not cover.
+unsafe fn row_changed(this: *mut c_void) {
+	if this.is_null() {
+		return;
+	}
+	let value = (this as *const u8).add(ROW_VALUE).cast::<c_int>().read();
+	if value < 0 || value as usize >= SETS.len() {
+		return;
+	}
+	SHOWN_SET = value;
+	aim_logo(value);
+
+	// For a set the dispatch knows, the game has already chosen the block.
+	// Past it there was no call at all, so the sprite is still showing the
+	// frames of whatever was selected before.
+	if value as usize >= MENU_SETS && !SET_ANIME.is_null() {
+		let sprite = (this as *const u8)
+			.add(ROW_SPRITE)
+			.cast::<*mut c_void>()
+			.read();
+		if !sprite.is_null() {
+			call_game::<_, ()>(
+				SET_ANIME,
+				(sprite, SOUND_ANM, BORROWED_BLOCK, SOUND_FRAMES, 1),
+			);
+		}
+	}
+
+	if ROW_SHOWN != value {
+		let first = ROW_SHOWN == -1;
+		ROW_SHOWN = value;
+		// Not on the first draw: that value came out of the card, which came
+		// out of `audio.toml` in the first place.
+		if !first {
+			if let Some(set) = SETS.get(value as usize) {
+				remember(&set.name);
+			}
+		}
+	}
+}
+
+/// Writes the chosen set back to `plugins/audio.toml`.
+///
+/// Through a temporary file in the same directory and a rename, because an
+/// interrupted write would leave an `audio.toml` that does not parse, and
+/// `chosen_set` treats a file it cannot parse exactly like a file that names
+/// nothing -- by silently leaving the player on the native sets.
+fn remember(name: &str) {
+	let temp = "plugins/audio.toml.new";
+	if let Err(err) = std::fs::write(temp, format!("bgm = \"{name}\"\n")) {
+		platform::log(&format!("bgm: cannot write {temp} ({err})"));
+		return;
+	}
+	if let Err(err) = std::fs::rename(temp, "plugins/audio.toml") {
+		platform::log(&format!("bgm: cannot replace plugins/audio.toml ({err})"));
+		return;
+	}
+	platform::log(&format!("bgm: plugins/audio.toml now chooses {name}"));
+}
+
+static mut ORIGINAL_AN_RESET: *const () = std::ptr::null();
+static mut ORIGINAL_INIT_ANIME: *const () = std::ptr::null();
+
+unsafe extern "C" fn an_reset(this: *mut c_void) {
+	call_game::<_, ()>(ORIGINAL_AN_RESET, (this,));
+	row_changed(this);
+}
+
+unsafe extern "C" fn init_anime(this: *mut c_void) {
+	call_game::<_, ()>(ORIGINAL_INIT_ANIME, (this,));
+	row_changed(this);
+}
+
+/// Everything the card screen's row needs, or nothing.
+unsafe fn install_selector() {
+	// The row can only usefully offer more than the game already does.
+	let sets = SETS.len();
+	if sets <= MENU_SETS {
+		return;
+	}
+	let mut row_max = [0xc7u8, 0x46, 0x60, 0x02, 0x00, 0x00, 0x00];
+	let found = std::slice::from_raw_parts(ROW_MAX as *const u8, row_max.len());
+	if found != row_max {
+		platform::log(&format!(
+			"bgm: not patching the BGM row's maximum -- {ROW_MAX:#x} holds {found:02x?}, not \
+			 {row_max:02x?}"
+		));
+		return;
+	}
+	if !apply(&SELECTOR, "the BGM row") {
+		return;
+	}
+	row_max[3..7].copy_from_slice(&((sets - 1) as u32).to_le_bytes());
+	platform::write_memory(ROW_MAX as *mut (), &row_max);
+	platform::log(&format!(
+		"bgm: the card screen's BGM row now scrolls {sets} sets, wrapping at both ends"
+	));
+
+	LOGO_ORIGINAL = std::slice::from_raw_parts(LOGO_DESC as *const u8, LOGO_BYTES)
+		.try_into()
+		.unwrap_or([0; LOGO_BYTES]);
+	LOGO_SAVED = LOGO_ORIGINAL.iter().any(|byte| *byte != 0);
+
+	SET_ANIME = hook::get_symbol("_ZN13clSpriteAnime8setAnimeE3ANMiii") as *const ();
+	if SET_ANIME.is_null() {
+		platform::log(
+			"bgm: clSpriteAnime::setAnime is missing, so a custom set's plate will be stale",
+		);
+	}
+	ORIGINAL_AN_RESET = hook::hook_symbol("_ZN14clSeqCardDisp98an_resetEv", an_reset as *const ());
+	ORIGINAL_INIT_ANIME =
+		hook::hook_symbol("_ZN14clSeqCardDisp99initAnimeEv", init_anime as *const ());
+}
 // ------------------------------------------------------------- story mode
 
 static mut ORIGINAL_STORY_BGM: *const () = std::ptr::null();
@@ -687,6 +1007,10 @@ pub unsafe fn init() {
 		hook::hook_symbol("_ZN14clV386CardData4dataEbPc", card_save as *const ());
 	ORIGINAL_STORY_BGM =
 		hook::hook_symbol("_ZNK14clEffStoryType6getBgmEii", story_bgm as *const ());
+
+	if CONFIG.bgm_selector {
+		install_selector();
+	}
 }
 
 #[cfg(test)]
@@ -762,5 +1086,88 @@ mod tests {
 	fn the_scratch_entry_is_in_the_table() {
 		assert!(SCRATCH >= 0 && (SCRATCH as usize) < BGM_ENTRIES);
 		assert_eq!(BGM_TABLE + BGM_ENTRIES * BGM_ENTRY, 0x0932_1260 + 111 * 12);
+	}
+	/// An edit must write exactly as many bytes as it checked. One byte more
+	/// and it runs into the next instruction, which on this screen is a jump.
+	#[test]
+	fn every_edit_writes_what_it_measured() {
+		for edit in &SELECTOR {
+			assert_eq!(
+				edit.expect.len(),
+				edit.write.len(),
+				"{} changes the instruction length",
+				edit.what
+			);
+			assert_ne!(edit.expect, edit.write, "{} writes nothing", edit.what);
+		}
+	}
+
+	/// The two gate edits may only change the immediate of a `mov`. If the
+	/// opcode or the destination moved, the edit is pointed at the wrong
+	/// instruction and the expected bytes would not have caught it.
+	#[test]
+	fn the_gate_edits_change_only_the_number_written() {
+		for edit in [&SELECTOR[0], &SELECTOR[1]] {
+			assert_eq!(edit.expect[..3], edit.write[..3], "the mov itself changed");
+			assert_eq!(edit.write[3], 2, "the unlock count must end up at 2");
+			assert_eq!(edit.expect[4..], edit.write[4..]);
+		}
+	}
+
+	/// The wrap edits turn `cmp reg,2; jne` into `cmp reg,1; jl`, so a row
+	/// index of 1 or 2 takes the wrapping path and row 0 still clamps. Both
+	/// the compared value and the condition have to move together: either on
+	/// its own changes which rows wrap, and `jne` with 1 would wrap row 0.
+	#[test]
+	fn the_wrap_edits_move_the_bound_and_the_condition_together() {
+		for edit in [&SELECTOR[2], &SELECTOR[3]] {
+			assert_eq!(edit.expect[2], 2, "the test should start at row 2");
+			assert_eq!(edit.write[2], 1, "the test should end at row 1");
+			assert_eq!(edit.expect[3], 0x0f);
+			assert_eq!(edit.expect[4], 0x85, "jne");
+			assert_eq!(edit.write[4], 0x8c, "jl");
+			assert_eq!(edit.expect[..2], edit.write[..2], "the cmp itself changed");
+		}
+	}
+
+	/// The maximum is written as a dword immediate in the last four bytes of
+	/// a seven-byte `mov`, so the slice the set count goes into has to line up
+	/// with what the verified template measured.
+	#[test]
+	fn the_row_maximum_is_a_dword_at_the_end_of_the_mov() {
+		let mut row_max = [0xc7u8, 0x46, 0x60, 0x02, 0x00, 0x00, 0x00];
+		assert_eq!(row_max.len(), 7);
+		row_max[3..7].copy_from_slice(&6u32.to_le_bytes());
+		assert_eq!(row_max, [0xc7, 0x46, 0x60, 0x06, 0x00, 0x00, 0x00]);
+		// Seven sets index 0..=6, so the maximum is one less than the count.
+		assert_eq!((7usize - 1) as u32, 6);
+	}
+
+	/// A descriptor is 44 bytes and both size pairs have to land inside it.
+	#[test]
+	fn the_logo_descriptor_offsets_are_inside_the_entry() {
+		for offset in [LOGO_WIDTH, LOGO_HEIGHT, LOGO_WIDTH2, LOGO_HEIGHT2] {
+			assert!(offset + 4 <= LOGO_BYTES, "{offset:#x} runs off the entry");
+		}
+		assert_eq!(LOGO_BYTES, 0x2c);
+	}
+
+	/// What the engine samples with comes out of this, so anything that is
+	/// not a whole PNG header has to answer None rather than a plausible size.
+	#[test]
+	fn a_logo_size_is_only_read_from_a_real_png_header() {
+		let mut png = vec![0x89u8];
+		png.extend_from_slice(b"PNG\r\n\x1a\n");
+		png.extend_from_slice(&13u32.to_be_bytes());
+		png.extend_from_slice(b"IHDR");
+		png.extend_from_slice(&192u32.to_be_bytes());
+		png.extend_from_slice(&32u32.to_be_bytes());
+		assert_eq!(png_size_of(&png), Some((192, 32)));
+
+		assert_eq!(png_size_of(&png[..23]), None, "a truncated header");
+		assert_eq!(png_size_of(b"not a png at all, but long enough......"), None);
+		let mut zero = png.clone();
+		zero[16..20].copy_from_slice(&0u32.to_be_bytes());
+		assert_eq!(png_size_of(&zero), None, "a zero width");
 	}
 }

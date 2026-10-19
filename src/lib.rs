@@ -85,6 +85,14 @@ pub struct Config {
 	/// that plugin work unchanged.
 	custom_bgm: bool,
 
+	/// Let the card screen's BGM row reach the custom sets, instead of
+	/// `plugins/audio.toml` being the only way to choose one. Needs
+	/// `custom_bgm`, and does nothing without a pack. This one rewrites a
+	/// little of the game's code in memory -- the row's maximum is an unlock
+	/// count and its ends are hardcoded comparisons, so no hook reaches them
+	/// -- and every edit is checked against the bytes it expects first.
+	bgm_selector: bool,
+
 	/// Unlock the GEMBALLA maker, which the Export build hides, and put story
 	/// chara 30 back in the Gemballa 964 RSR. Applied in memory, never to
 	/// `main` on disk, and only when the bytes at every offset are what this
@@ -163,6 +171,7 @@ const fn default_config() -> Config {
 		widescreen_hud: true,
 		widescreen_anchor: false,
 		custom_bgm: false,
+		bgm_selector: true,
 		gemballa: false,
 		file_redirect: None,
 		vsync: true,

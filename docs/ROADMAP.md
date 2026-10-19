@@ -660,6 +660,65 @@ calls its trampolines directly, which is correct on Linux and faults in SSE
 code on Windows. That is the single most mechanical part of the port and the
 easiest to half-finish.
 
+**The card screen's BGM row, and how a custom set reaches it.** Card check
+page 8 is `clSeqCardDisp9` (`run` at `0x087ef0ec`), a three-row settings
+editor whose rows are an `int[3]` at `[this+0x44]` with their maxima at
+`[this+0x5c]`: row 0 is the BGM volume (`card+0x16C`, an
+`emBgmVolumeType`, four levels, default 2, consumed by `mseqEntry` at
+`0x088d375a` through `SNDStreamSetVolumeTypeFromCard`), **row 1 is the BGM
+set** (`card+0x16D`), row 2 is the print-pass type. The cursor row is
+`[this+0x40]`.
+
+Input is `clMenuInput::chkSW(mask)` at `0x0891a13c`, which is worth knowing
+on its own: **it is the single funnel every menu in the game reads buttons
+through, 295 call sites**, and it synthesises its bits from two fields of the
+singleton at `0x097fe8b0` -- `[+0x10]` giving bit 1 (left) at `-1` and bit 2
+(right) at `1`, `[+0x14]` giving `1`->`0x10` gas, `2`->`0x20` brake,
+`3`->`0x40` view, `4`->`0x80` intrude. `exec()` at `0x0891a20c` fills
+`[+0x10]` with `trunc([dev+0x20] * 3.0)` clamped to +-3, where `[dev+0x20]`
+is the steering float. So **menu cursors are the wheel, left and right only;
+this game's menus have no up or down**, which is why the row is scrolled
+sideways and why nothing needs a JAMMA bit injected.
+
+Three things kept custom sets out of that row, all handled in `src/bgm.rs`
+under `bgm_selector`:
+
+- **The maximum is an unlock count.** `[this+0x68]` is 0, then 1 if
+  `card+0x279` is set, then 2 if `card+0x186` is set, reaching `[this+0x60]`
+  through a three-way dispatch at `0x087ef1bf`. Forcing the two lower writes
+  (`0x087ef16c`, `0x087ef192`) to 2 makes every path take the `== 2` branch,
+  which is also the branch that loads the full
+  `menu_g_cardcheck_8_sound_sel` plate instead of the cut-down (`_2`) or
+  locked (`_no`) ones -- so one change unlocks the row *and* gives it artwork
+  with three blocks of frames. Only that branch's store at `0x087ef936` then
+  needs the real count. **What `card+0x186` and `card+0x279` actually are is
+  still unknown**; forcing past them means the row is offered on cards where
+  the game meant it locked.
+- **Row 1 clamped.** Only row 2 wrapped, and the test is the row index
+  against 2 in both directions (`0x087efd1a` up, `0x087efedf` down). `cmp
+  reg,2; jne` becomes `cmp reg,1; jl`, so rows 1 and 2 wrap and row 0 still
+  clamps. Move the immediate without the condition and row 0 starts wrapping.
+- **The artwork is frame blocks, not images.** Each set plays 59 frames of
+  one `.anm` at start 0, 100 or 200, and for an index of 3 or more the
+  dispatch makes **no `setAnime` call at all**, leaving the previous set's
+  frames on screen. So a custom set borrows the third block from an
+  `an_reset`/`initAnime` hook, and the sprite *descriptor* that block draws
+  from is repointed at the pack's `mod.png`. **The card screen never goes
+  through `Gap::Gfx::igImage::load`**, so the hook that substitutes the
+  pre-race logo cannot reach it: `menu_p_sound_logo_maxi*.png` has zero code
+  references, and sprites here resolve through `clImageResourceManager::load`
+  (`0x08519a88`) from ids compiled into the `.anm`. The descriptor table is at
+  `0x0955aaa0`, stride `0x2c`, `0x1fad` entries, handed over in
+  `clMain::clMain()` at `0x088c7d00`; an entry is `{ const char *path, int,
+  int, int, float w, h, sx, sy, w2, h2, int }` and `maxi1/2/3` are ids
+  `0x1650/0x1651/0x1652` at `0x09598060/0x0959808c/0x095980b8`, all 256x32.
+
+**Still unproven:** that frames 0-58/100-158/200-258 of that plate are
+maxi1/maxi2/maxi3. The `.anm` encoding was not decoded -- the raw dwords
+`0x1650/0x1651/0x1652` do not appear in the file, so ids are stored narrower
+or table-encoded. If the assumption is wrong, a custom set shows the wrong
+plate and repointing the descriptor has no visible effect.
+
 ### P6 — Gemballa unlock (from tattoohanz's Gemballa-Unlocker)
 
 Extracted from the PyInstaller bundle the user supplied. Two halves:
