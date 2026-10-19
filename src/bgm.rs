@@ -467,12 +467,44 @@ unsafe extern "C" fn load_image(this: *mut c_void, path: *const c_char) -> c_int
 
 static mut WIDE_STRING: *const () = std::ptr::null();
 
+/// The PLT stub for `std::wstring(wchar_t const*, allocator const&)`.
+///
+/// Resolving it by name does not work. It lives in `libso/libstdc++.so.6` as
+/// a weak symbol, and LINE's `DlSym` does not return it -- measured on
+/// hardware, where the loader logged the constructor as missing. The game
+/// calls it too, though, through this stub at `0x8541339`, and the stub's GOT
+/// slot has already been relocated by the time anything runs. So the stub is
+/// the reliable way in, and its own six bytes identify it.
+const WIDE_STRING_PLT: usize = 0x0842_1390;
+const WIDE_STRING_PLT_BYTES: [u8; 6] = [0xff, 0x25, 0x40, 0xce, 0x7f, 0x09];
+
+/// libstdc++'s shared empty `_Rep`, and the header that sits in front of a
+/// string's characters.
+///
+/// A default-constructed `std::wstring` holds `EMPTY_REP + REP_HEADER` --
+/// `clSeqStdDayTimeSelectThread::bgmUpdate` says so itself, taking the
+/// pointer it was handed, subtracting 12 and comparing against this address
+/// to decide whether the string needs releasing. That is where the header
+/// size comes from, and it is also why handing this value back is safe: the
+/// shared empty rep's refcount is -1, so nothing ever tries to free it.
+const EMPTY_REP: usize = 0x097F_D4C8;
+const REP_HEADER: usize = 12;
+
 /// Builds `std::wstring(text)` into the caller's storage.
 ///
 /// The allocator argument is a reference to an empty class, so the game's own
 /// call passes whatever is convenient and so does this one.
 unsafe fn write_wstring(out: *mut c_void, text: *const u32) {
-	if WIDE_STRING.is_null() || out.is_null() {
+	if out.is_null() {
+		return;
+	}
+	if WIDE_STRING.is_null() {
+		// **Never leave the caller's storage untouched.** It is an
+		// uninitialised stack slot, and the caller hands it straight to
+		// `clSpriteFont::setString` and then to a destructor -- so returning
+		// without writing anything is not "no title", it is a garbage pointer
+		// read and then freed. An empty string is the quiet failure.
+		out.cast::<usize>().write(EMPTY_REP + REP_HEADER);
 		return;
 	}
 	let _: *mut c_void = call_game(WIDE_STRING, (out, text, std::ptr::null::<c_void>()));
@@ -964,9 +996,18 @@ pub unsafe fn init() {
 
 	WIDE_STRING = hook::get_symbol("_ZNSbIwSt11char_traitsIwESaIwEEC1EPKwRKS1_") as *const ();
 	if WIDE_STRING.is_null() {
-		// It lives in libstdc++, not in `main`, so this is a loader problem
-		// rather than a wrong name: see the broken-symlink note in CLAUDE.md.
-		platform::log("bgm: the std::wstring constructor is missing, so song names will be blank");
+		// Expected: it lives in libstdc++ rather than in `main`, and LINE's
+		// DlSym does not reach it. The game's own PLT stub does.
+		let stub =
+			std::slice::from_raw_parts(WIDE_STRING_PLT as *const u8, WIDE_STRING_PLT_BYTES.len());
+		if stub == WIDE_STRING_PLT_BYTES {
+			WIDE_STRING = WIDE_STRING_PLT as *const ();
+			platform::log("bgm: song names go through the game's own std::wstring PLT stub");
+		} else {
+			platform::log(&format!(
+				"bgm: no std::wstring constructor -- {WIDE_STRING_PLT:#x} holds {stub:02x?}, not 				 {WIDE_STRING_PLT_BYTES:02x?} -- so song names will be blank"
+			));
+		}
 	}
 
 	ORIGINAL_PLAY = hook::hook_symbol(
@@ -1087,6 +1128,20 @@ mod tests {
 		assert!(SCRATCH >= 0 && (SCRATCH as usize) < BGM_ENTRIES);
 		assert_eq!(BGM_TABLE + BGM_ENTRIES * BGM_ENTRY, 0x0932_1260 + 111 * 12);
 	}
+	/// The empty-string fallback has to be the exact pointer a
+	/// default-constructed `std::wstring` holds, because `bgmUpdate` compares
+	/// against it to decide whether to release the string. One byte out and
+	/// the game frees the shared empty rep.
+	#[test]
+	fn an_empty_title_is_the_pointer_the_game_itself_tests_for() {
+		// `lea ebx,[eax-0xc]; cmp ebx,0x97fd4c8` in bgmUpdate: the data
+		// pointer less the header is the rep, so the rep plus the header is
+		// the data pointer.
+		assert_eq!(EMPTY_REP + REP_HEADER - REP_HEADER, EMPTY_REP);
+		assert_eq!(REP_HEADER, 0xc, "the _Rep header is three machine words");
+		assert_eq!(EMPTY_REP + REP_HEADER, 0x097F_D4D4);
+	}
+
 	/// An edit must write exactly as many bytes as it checked. One byte more
 	/// and it runs into the next instruction, which on this screen is a jump.
 	#[test]
